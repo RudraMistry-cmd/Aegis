@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check that required files are present
+        run: |
+          set -euo pipefail
+          missing=0
+          while read -r f; do
+            [ -z "$f" ] && continue
+            if [ ! -f "$f" ]; then
+              echo "missing required file: $f"
+              missing=1
+            fi
+          done <<'FILES'
+          README.md
+          LICENSE
+          package.json
+          tsconfig.json
+          .gitignore
+          CHANGELOG.md
+          CONTRIBUTING.md
+          src/index.ts
+          src/domain/index.ts
+          src/errors/index.ts
+          src/ports/index.ts
+          src/rbac/index.ts
+          src/policy/index.ts
+          src/auth/index.ts
+          src/storage/memory/index.ts
+          test/unit/login.test.ts
+          test/unit/refresh.test.ts
+          test/unit/revoke.test.ts
+          test/unit/rbac.test.ts
+          test/unit/policy.test.ts
+          test/conformance/authz.conformance.test.ts
+          test/conformance/authn.conformance.test.ts
+          test/conformance/race.conformance.test.ts
+          examples/in-memory-demo.ts
+          scripts/run-tests.sh
+          docs/DESIGN.md
+          docs/CONFORMANCE.md
+          spec/errors.md
+          spec/invariants.md
+          spec/conformance.md
+          spec/auth/principal.md
+          spec/auth/session.md
+          spec/auth/tokens.md
+          spec/rbac/roles.md
+          spec/rbac/permissions.md
+          spec/rbac/assignments.md
+          spec/policy/policy.md
+          spec/policy/scope.md
+          spec/storage/interfaces.md
+          spec/flows/login.md
+          spec/flows/refresh.md
+          spec/flows/revoke.md
+          FILES
+          exit "$missing"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Run the demo
+        run: npm run start-demo
