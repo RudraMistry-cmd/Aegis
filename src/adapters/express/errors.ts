@@ -4,7 +4,10 @@
 import type { Response } from 'express';
 import { AuthError, isAuthError, type ErrorCode } from '../../errors/index.js';
 
-/** One HTTP status per error code. Codes not named in the adapter brief follow the spec's category rule. */
+/**
+ * One HTTP status per error code, following the category rule of spec/errors.md §2; NOT_FOUND (a
+ * validation-category code) uses the more specific 404.
+ */
 export const HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   UNAUTHENTICATED: 401,
   TOKEN_EXPIRED: 401,
@@ -18,7 +21,7 @@ export const HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   CONFLICT: 409,
   VALIDATION_FAILED: 400,
   STATE_TRANSITION_INVALID: 400,
-  PRECONDITION_FAILED: 400,
+  PRECONDITION_FAILED: 409,
   RATE_LIMITED: 429,
   CONFIG_INVALID: 500,
   INTERNAL: 500,

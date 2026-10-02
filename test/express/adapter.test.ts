@@ -411,7 +411,7 @@ describe('Express adapter — error mapping', () => {
       NOT_FOUND: 404,
       CONFLICT: 409,
       VALIDATION_FAILED: 400,
-      PRECONDITION_FAILED: 400,
+      PRECONDITION_FAILED: 409,
       CONFIG_INVALID: 500,
       STORAGE_UNAVAILABLE: 503,
     };
