@@ -1,7 +1,7 @@
 {
   "name": "aegis-core",
   "version": "0.4.0",
-  "description": "Aegis: core authentication and authorization domain, with in-memory and PostgreSQL storage adapters.",
+  "description": "Aegis: core authentication and authorization domain, with in-memory and PostgreSQL storage adapters and an Express adapter.",
   "license": "MIT",
   "type": "module",
   "main": "dist/src/index.js",
@@ -25,10 +25,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.20.4",
     "@types/pg": "^8.23.1",
     "embedded-postgres": "17.10.0-beta.17",
     "eslint": "^9.39.5",
+    "express": "^5.2.1",
     "pg": "^8.23.1",
     "prettier": "^3.9.9",
     "typescript": "^5.9.3",
@@ -42,6 +44,10 @@
     "./postgres": {
       "types": "./dist/src/storage/postgres/index.d.ts",
       "default": "./dist/src/storage/postgres/index.js"
+    },
+    "./express": {
+      "types": "./dist/src/adapters/express/index.d.ts",
+      "default": "./dist/src/adapters/express/index.js"
     }
   },
   "files": [
@@ -52,10 +58,14 @@
     "LICENSE"
   ],
   "peerDependencies": {
-    "pg": "^8.11.0"
+    "pg": "^8.11.0",
+    "express": "^5.0.0"
   },
   "peerDependenciesMeta": {
     "pg": {
+      "optional": true
+    },
+    "express": {
       "optional": true
     }
   }

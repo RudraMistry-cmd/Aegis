@@ -83,6 +83,11 @@ jobs:
           src/storage/postgres/assignmentStore.ts
           docs/POSTGRES.md
           docs/JWKS.md
+          src/adapters/express/middleware.ts
+          src/adapters/express/errors.ts
+          src/adapters/express/routes.ts
+          src/adapters/express/app.ts
+          test/express/adapter.test.ts
           src/storage/postgres/keyStore.ts
           src/storage/file/keyStore.ts
           src/storage/memory/keyStore.ts
