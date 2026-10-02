@@ -2,12 +2,24 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
+    name: build, lint, unit tests
     runs-on: ubuntu-latest
+    env:
+      # Not needed by the unit suite (tests inject their own keys); exported so any step that opens a
+      # PostgreSQL key store behaves as in staging. Never echoed: GitHub masks secret values in logs.
+      AEGIS_MASTER_KEY: ${{ secrets.AEGIS_MASTER_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -94,41 +106,83 @@ jobs:
           src/auth/jwt/keySealing.ts
           src/auth/jwt/persistentKeyProvider.ts
           src/auth/jwt/jwks.ts
+          src/observability/metrics.ts
+          scripts/migrate.mjs
+          docker-compose.yml
+          Dockerfile
+          prometheus/prometheus.yml
+          docs/STAGING.md
+          docs/SECRETS.md
           FILES
           exit "$missing"
+
+      - name: Build
+        run: npm run build
 
       - name: Lint
         run: npm run lint
 
-      - name: Test
-        run: npm test
+      - name: Unit, conformance and Express tests
+        run: |
+          set -o pipefail
+          mkdir -p test-logs
+          npm test 2>&1 | tee test-logs/unit.log
 
       - name: Run the demo
         run: npm run start-demo
 
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-logs
+          path: test-logs/
+          retention-days: 14
+
   postgres:
-    # Runs the PostgreSQL adapter suite (contract, concurrency, transactions, flows) against a real
-    # PostgreSQL 17 server. AEGIS_PG_URL makes scripts/test-postgres.mjs use it instead of starting
-    # an embedded server.
+    name: PostgreSQL ${{ matrix.pg }} suite
+    # Contract, concurrency, transactions, flows and key-store tests against a real server.
+    # AEGIS_PG_URL makes scripts/test-postgres.mjs use it instead of an embedded server; the user
+    # must be allowed to CREATE DATABASE (each test file creates and drops its own).
     runs-on: ubuntu-latest
     needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["15", "17"]
     services:
       postgres:
-        image: postgres:17
+        image: postgres:${{ matrix.pg }}
         env:
-          POSTGRES_USER: aegis
-          POSTGRES_PASSWORD: aegis
-          POSTGRES_DB: postgres
+          POSTGRES_USER: ${{ secrets.PG_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.PG_PASS }}
+          POSTGRES_DB: ${{ secrets.PG_DB }}
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U aegis"
+          --health-cmd "pg_isready"
           --health-interval 5s
           --health-timeout 5s
-          --health-retries 10
+          --health-retries 20
     env:
-      AEGIS_PG_URL: postgres://aegis:aegis@localhost:5432/postgres
+      AEGIS_MASTER_KEY: ${{ secrets.AEGIS_MASTER_KEY }}
+      PG_USER: ${{ secrets.PG_USER }}
+      PG_PASS: ${{ secrets.PG_PASS }}
+      PG_DB: ${{ secrets.PG_DB }}
     steps:
+      - name: Check required secrets
+        # Pull requests from forks receive no secrets; fail with a clear message instead of a
+        # confusing connection error.
+        run: |
+          missing=0
+          for v in AEGIS_MASTER_KEY PG_USER PG_PASS PG_DB; do
+            if [ -z "${!v}" ]; then echo "::error::repository secret $v is not set"; missing=1; fi
+          done
+          if [ -n "$AEGIS_MASTER_KEY" ] && ! [[ "$AEGIS_MASTER_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::AEGIS_MASTER_KEY must be 64 hex characters"; missing=1
+          fi
+          exit "$missing"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -139,5 +193,35 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: PostgreSQL adapter suite
-        run: npm run test:pg
+      - name: Build
+        run: npm run build
+
+      - name: Migrations apply cleanly
+        env:
+          DATABASE_URL: postgres://${{ secrets.PG_USER }}:${{ secrets.PG_PASS }}@localhost:5432/${{ secrets.PG_DB }}
+        run: npm run migrate
+
+      - name: PostgreSQL suite
+        env:
+          AEGIS_PG_URL: postgres://${{ secrets.PG_USER }}:${{ secrets.PG_PASS }}@localhost:5432/${{ secrets.PG_DB }}
+        run: |
+          set -o pipefail
+          mkdir -p test-logs
+          npm run test:postgres 2>&1 | tee "test-logs/postgres-${{ matrix.pg }}.log"
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-${{ matrix.pg }}-test-logs
+          path: test-logs/
+          retention-days: 14
+
+  image:
+    name: staging image builds
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the staging image (not pushed)
+        run: docker build --tag aegis-staging:ci .
