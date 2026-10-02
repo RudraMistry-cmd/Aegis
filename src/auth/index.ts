@@ -1,7 +1,7 @@
 // The public facade: wires the domain services over the injected ports.
 // Implements the configuration and public-API shape of spec/auth/*, spec/rbac/*, spec/policy/*.
 import type { Id, Principal, RoleAssignment, Subject } from '../domain/index.js';
-import { authError } from '../errors/index.js';
+import { authError, configInvalid } from '../errors/index.js';
 import { Authorizer } from '../policy/authorizer.js';
 import type { AuthScope, Decision, Policy, Resource } from '../policy/index.js';
 import {
@@ -57,6 +57,8 @@ export interface Auth {
     refresh(input: RefreshInput): Promise<RefreshResult>;
     /** Returns null for every credential problem; throws only on infrastructure failure. */
     resolve(accessToken: string | null | undefined): Promise<Principal | null>;
+    /** Like resolve, but throws UNAUTHENTICATED / TOKEN_EXPIRED / TOKEN_INVALID instead of null. */
+    authenticate(accessToken: string | null | undefined): Promise<Principal>;
     logout(input: LogoutInput): Promise<void>;
     logoutAll(principal: Principal, options?: { includeCurrent?: boolean }): Promise<number>;
     revokeSession(actor: Principal | Subject, sessionId: Id): Promise<void>;
@@ -99,7 +101,24 @@ export interface Auth {
  * @throws CONFIG_INVALID listing every violation found in the configuration.
  */
 export function createAuth(input: CreateAuthInput): Auth {
-  const config = resolveAuthConfig(input);
+  // tokens.md §2.3.1: an access-token provider that fixes its lifetime (the JWT provider does) and
+  // the core must agree on it. If the core leaves it unset, the provider's lifetime is adopted.
+  const providerTtl = input.accessTokens.ttlMs;
+  const coreTtl = input.tokens?.accessTtlMs;
+  if (providerTtl !== undefined && coreTtl !== undefined && coreTtl !== providerTtl) {
+    throw configInvalid([
+      {
+        path: 'tokens.accessTtlMs',
+        rule: 'token.ttl_mismatch',
+        message: 'must equal the access-token provider ttl',
+      },
+    ]);
+  }
+  const config = resolveAuthConfig(
+    providerTtl !== undefined && coreTtl === undefined
+      ? { ...input, tokens: { ...input.tokens, accessTtlMs: providerTtl } }
+      : input,
+  );
   const ctx: AuthContext = {
     storage: input.storage,
     hasher: input.hasher,
@@ -180,6 +199,7 @@ export function createAuth(input: CreateAuthInput): Auth {
       login: (i) => loginService.login(i),
       refresh: (i) => refreshService.refresh(i),
       resolve: (t) => resolution.resolve(t),
+      authenticate: (t) => resolution.authenticate(t),
       logout: (i) => revocation.logout(i),
       logoutAll: (p, o) => revocation.logoutAll(p, o ?? {}),
       revokeSession: (a, s) => revocation.revokeSession(a, s),
@@ -218,7 +238,7 @@ export function createAuth(input: CreateAuthInput): Auth {
       accountStates: config.accountStates.states.map((s) => s.name),
       sessions: config.sessions,
       tokens: config.tokens,
-      revocationApplied: 'strict (see docs/CONFORMANCE.md deviation D-2)',
+      revocationApplied: 'strict (spec/auth/tokens.md §2.5)',
       revealRestrictedState: config.revealRestrictedState,
       enumerationSafeRegistration: config.enumerationSafeRegistration,
       throttleFailMode: config.throttleFailMode,
@@ -237,7 +257,11 @@ export function requireAuth(principal: Principal | null | undefined): Principal 
 export { Catalog };
 export * from './config.js';
 export * from './digest.js';
-export * from './accessToken.js';
+export * from './jwt/keyProvider.js';
+export * from './jwt/jwtProvider.js';
+export * from './jwt/keySealing.js';
+export * from './jwt/persistentKeyProvider.js';
+export * from './jwt/jwks.js';
 export * from './issue.js';
 export * from './login.js';
 export * from './refresh.js';

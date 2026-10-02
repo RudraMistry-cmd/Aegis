@@ -73,9 +73,18 @@ export class PostgresUserStore implements UserStore {
     });
   }
 
+  /**
+   * Inside a unit of work this LOCKS the user row (`FOR NO KEY UPDATE`, lock order step 1) until the
+   * unit ends. Every per-user decision a unit makes — "is this account allowed to log in?", "which
+   * securityVersion does the new session carry?" — starts from this read, so under READ COMMITTED
+   * the read itself must hold the lock (spec/storage/interfaces.md §11.1 rule 2). Otherwise an
+   * account-state change could commit between the read and the session insert, leaving an active
+   * session for a suspended account (INV-STATE-01). Outside a unit it is a plain read.
+   */
   async getById(id: Id): Promise<User | null> {
+    const lock = this.pg.ambient() ? ' FOR NO KEY UPDATE' : '';
     const r = await this.pg.query<UserRow>(
-      `SELECT ${USER_COLUMNS} FROM aegis.users WHERE id = $1`,
+      `SELECT ${USER_COLUMNS} FROM aegis.users WHERE id = $1${lock}`,
       [id],
     );
     return r.rows[0] ? toUser(r.rows[0]) : null;

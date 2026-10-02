@@ -11,6 +11,7 @@ import {
   PostgresIdentifierStore,
   PostgresUserStore,
 } from './identityStores.js';
+import { PostgresKeyStore } from './keyStore.js';
 import { migrate } from './migrate.js';
 import { PostgresClient, type PostgresConfig } from './postgresClient.js';
 import { PostgresRefreshTokenStore } from './refreshTokenStore.js';
@@ -21,6 +22,8 @@ import { PostgresUnitOfWork, TransactionRunner } from './unitOfWork.js';
 export interface PostgresStorage extends Storage {
   readonly client: PostgresClient;
   readonly runner: TransactionRunner;
+  /** Durable JWT signing keys (migrations/003). */
+  readonly keys: PostgresKeyStore;
   /** Applies pending migrations from `migrations/`. Safe to call on every start. */
   migrate(dir?: string): Promise<string[]>;
   /**
@@ -60,6 +63,7 @@ export function createPostgresStorage(options: CreatePostgresStorageOptions): Po
     uow: new PostgresUnitOfWork(runner, stores),
     client,
     runner,
+    keys: new PostgresKeyStore(client, runner),
     migrate: (dir?: string) => migrate(client, dir),
     housekeep: async (cutoff: Timestamp) => {
       const r = await client.query(
@@ -75,6 +79,7 @@ export function createPostgresStorage(options: CreatePostgresStorageOptions): Po
 }
 
 export { PostgresAuditSink, type PostgresAuditSinkOptions } from './auditSink.js';
+export { PostgresKeyStore } from './keyStore.js';
 export { isRetryable, mapPgError } from './errors.js';
 export { defaultMigrationsDir, migrate } from './migrate.js';
 export { PostgresClient, type PostgresConfig } from './postgresClient.js';

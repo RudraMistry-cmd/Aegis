@@ -9,7 +9,7 @@ import {
   type Timestamp,
   type User,
 } from '../domain/index.js';
-import { toInfraError } from '../errors/index.js';
+import { authError, toInfraError } from '../errors/index.js';
 import { clampIdle } from './issue.js';
 import { emitAudit, type AuthContext } from './config.js';
 
@@ -59,12 +59,9 @@ export async function buildPrincipal(
 /**
  * Turns the credentials of an incoming request into a Principal.
  *
- * DEVIATION (documented in docs/CONFORMANCE.md): `tokens.revocation` is accepted in configuration
- * but this implementation always applies **strict** semantics — the session and `securityVersion`
- * are checked on every request. spec/auth/tokens.md §2.5 permits `eventual` to accept an access
- * token of a revoked session until its `exp`, which contradicts INV-SESS-01; Phase 1 resolves that
- * conflict in favour of the invariant (fail closed).
- * TODO(spec/auth/tokens.md §2.5): revisit when a cache layer exists.
+ * Strict revocation (spec/auth/tokens.md §2.5): the session and `securityVersion` are checked on
+ * every request against the store, never a cache, so a revoked session's tokens are rejected
+ * immediately (INV-SESS-01).
  */
 export class ResolutionService {
   constructor(private readonly ctx: AuthContext) {}
@@ -76,48 +73,69 @@ export class ResolutionService {
    *          failures throw STORAGE_UNAVAILABLE instead of returning null (principal.md §7.1).
    */
   async resolve(accessToken: string | null | undefined): Promise<Principal | null> {
+    const outcome = await this.evaluate(accessToken);
+    return outcome.ok ? outcome.principal : null;
+  }
+
+  /**
+   * Like `resolve`, but raises the external error instead of returning null (errors.md §3):
+   * - no credential                                        → UNAUTHENTICATED
+   * - a genuine token (signature verified) that has expired → TOKEN_EXPIRED
+   * - anything else: malformed, bad signature, unknown kid, revoked or expired session,
+   *   securityVersion mismatch, account state                → TOKEN_INVALID (never says which)
+   * Infrastructure failures throw STORAGE_UNAVAILABLE, exactly as in `resolve`.
+   */
+  async authenticate(accessToken: string | null | undefined): Promise<Principal> {
+    const outcome = await this.evaluate(accessToken);
+    if (outcome.ok) return outcome.principal;
+    if (outcome.reason === 'absent') throw authError('UNAUTHENTICATED');
+    if (outcome.reason === 'expired') throw authError('TOKEN_EXPIRED');
+    throw authError('TOKEN_INVALID');
+  }
+
+  /** principal.md §7.2, shared by `resolve` and `authenticate`. */
+  private async evaluate(
+    accessToken: string | null | undefined,
+  ): Promise<
+    | { readonly ok: true; readonly principal: Principal }
+    | { readonly ok: false; readonly reason: 'absent' | 'expired' | 'invalid' }
+  > {
     const { storage, clock, config } = this.ctx;
     const now = clock.now();
+    const reject = async (reason: string, kind: 'expired' | 'invalid' = 'invalid') => {
+      await this.auditRejected(reason, now);
+      return { ok: false as const, reason: kind };
+    };
 
     // Step 1: extract.
-    if (typeof accessToken !== 'string' || accessToken.length === 0) return null;
+    if (typeof accessToken !== 'string' || accessToken.length === 0) {
+      return { ok: false, reason: 'absent' };
+    }
 
-    // Step 2: verify the transport credential.
+    // Step 2: verify the transport credential. This proves only that this server issued the token;
+    // it never decides whether the session may act (tokens.md §2.5).
     const verified = this.ctx.accessTokens.verify(accessToken, now);
     if (!verified.ok) {
-      await this.auditRejected(verified.failure, now);
-      return null;
+      return reject(verified.failure, verified.failure === 'expired' ? 'expired' : 'invalid');
     }
 
     try {
-      // Step 3: load the session.
+      // Step 3: load the session — the single source of truth.
       const session = await storage.sessions.get(verified.token.sessionId);
       if (!session || sessionStatus(session, now) !== 'active') {
-        await this.auditRejected('session_not_active', now);
-        return null;
+        return reject('session_not_active');
       }
-      if (session.userId !== verified.token.subjectId) {
-        await this.auditRejected('subject_mismatch', now);
-        return null;
-      }
+      if (session.userId !== verified.token.subjectId) return reject('subject_mismatch');
 
       // Step 5: account state.
       const user = await storage.users.getById(session.userId);
-      if (!user) {
-        await this.auditRejected('user_missing', now);
-        return null;
-      }
+      if (!user) return reject('user_missing');
       const state = findState(config.accountStates, user.status);
-      if (!state || !state.canLogin) {
-        await this.auditRejected('account_state', now);
-        return null;
-      }
+      if (!state || !state.canLogin) return reject('account_state');
 
       // Step 4: strict revocation check (always applied; see the class note).
-      if (verified.token.securityVersion !== user.securityVersion) {
-        await this.auditRejected('security_version', now);
-        return null;
-      }
+      if (verified.token.securityVersion !== user.securityVersion)
+        return reject('security_version');
 
       // Step 6: build the Principal.
       const principal = await buildPrincipal(this.ctx, session, user, now);
@@ -127,7 +145,7 @@ export class ResolutionService {
         const idle = clampIdle(now + config.sessions.idleTtlMs, session.absoluteExpiresAt);
         await storage.sessions.touch(session.id, now, idle).catch(() => false);
       }
-      return principal;
+      return { ok: true, principal };
     } catch (e) {
       // Fail closed and distinguishable from "unauthenticated".
       throw toInfraError(e);

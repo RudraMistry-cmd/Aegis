@@ -74,8 +74,24 @@ export class RefreshService {
    * `consume` and `rotate` run in ONE unit of work. The spec allows them to be separate (§6.5), but
    * joining them means a concurrent loser's reuse-revocation cannot cancel the winner's rotation,
    * so exactly one of N concurrent callers receives credentials (conformance REF-03).
+   *
+   * A store-level PRECONDITION_FAILED (e.g. `rotate` finding the session revoked meanwhile, §2
+   * step 9) is never exposed: it is mapped to TOKEN_INVALID (errors.md §3), with the original kept
+   * only as the internal cause.
    */
   async refresh(input: RefreshInput): Promise<RefreshResult> {
+    try {
+      return await this.rotateOrReject(input);
+    } catch (e) {
+      if (isAuthError(e) && e.code === 'PRECONDITION_FAILED') {
+        throw authError('TOKEN_INVALID', { cause: e });
+      }
+      throw e;
+    }
+  }
+
+  /** refresh.md §2 steps 1-11; see `refresh` for the external error contract. */
+  private async rotateOrReject(input: RefreshInput): Promise<RefreshResult> {
     const { storage, clock } = this.ctx;
     const now = clock.now();
 

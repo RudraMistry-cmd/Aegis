@@ -10,10 +10,15 @@
 // queue on step 1 and can never hold steps 2/3 in opposite orders. Operations on different users
 // share no locks. No flow ever locks two users.
 //
-// The role-holder lock (an advisory transaction lock per role name) is a separate domain: the
-// assignment flows take it and never take user/session/token locks, and the session/token flows
-// never take it, so the two domains cannot form a cycle. Within the role domain, multiple roles are
-// always locked in ascending name order (the catalog's sorted role list).
+// Reading a user inside a unit (`users.getById`) also takes step 1: the deciding read of a
+// per-user flow must itself hold the lock (spec/storage/interfaces.md §11.1 rule 2).
+//
+// The role-holder lock (an advisory transaction lock per role name) is a second domain. Only
+// `assign` holds a user lock (its target, read first) while acquiring a role lock, i.e. always in
+// the order user -> role; no transaction that holds a role lock ever waits for a user, session or
+// token lock, and the session/token flows never take role locks. So the two domains cannot form a
+// cycle. Within the role domain, multiple roles are always locked in ascending name order (the
+// catalog's sorted role list).
 //
 // FOR NO KEY UPDATE rather than FOR UPDATE: inserting a session or token takes FOR KEY SHARE on the
 // user row for its foreign key, which NO KEY UPDATE does not block. The mutex therefore serializes

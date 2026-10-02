@@ -11,11 +11,13 @@ import {
   MemoryRateLimiter,
   ScryptHasher,
   SequentialIdGenerator,
-  StubAccessTokenProvider,
+  createJwtAccessTokens,
   SYSTEM_ACTOR,
   type Auth,
   type AttributeProvider,
   type Catalog,
+  type InMemoryKeyProvider,
+  type JwtAccessTokenProvider,
   type Id,
   type Json,
   type MemoryStorage,
@@ -145,6 +147,10 @@ export interface TestSystem {
   readonly limiter: MemoryRateLimiter;
   readonly attributes: FakeAttributeProvider;
   readonly catalog: Catalog;
+  /** The JWT signing keys, for rotation tests. */
+  readonly keys: InMemoryKeyProvider;
+  /** The JWT provider, so tests can show a token is cryptographically valid yet rejected. */
+  readonly accessTokens: JwtAccessTokenProvider;
   /** Registers a user and returns its id, optionally assigning roles as the system actor. */
   createUser(identifier: string, roles?: readonly string[], status?: string): Promise<Id>;
   /** Logs in and returns the Principal plus credentials. */
@@ -166,12 +172,24 @@ export function createTestSystem(options: TestSystemOptions = {}): TestSystem {
   const limiter = new MemoryRateLimiter();
   const attributes = new FakeAttributeProvider();
   const catalog = options.catalog ?? testCatalog();
-  const accessTokens = new StubAccessTokenProvider({
-    secret: 'test-secret-value-of-at-least-32-bytes!!',
-    issuer: 'aegis-test',
-    audience: 'aegis-test-api',
-    ids,
-  });
+  // The real JWT provider (HS256 for speed), so every suite exercises genuine signing and
+  // verification; strict revocation is still decided by the session, never by the token.
+  const { accessTokens, keys } = createJwtAccessTokens(
+    {
+      tokens: {
+        algorithm: 'HS256',
+        issuer: 'aegis-test',
+        audience: 'aegis-test-api',
+        ...(options.tokens?.accessTtlMs !== undefined ? { ttl: options.tokens.accessTtlMs } : {}),
+      },
+      keys: { rotationEnabled: true },
+    },
+    {
+      keys: [{ kid: 'test-key-1', secret: 'test-secret-value-of-at-least-32-bytes!!' }],
+      clock,
+      ids,
+    },
+  );
 
   const auth = createAuth({
     storage,
@@ -252,6 +270,8 @@ export function createTestSystem(options: TestSystemOptions = {}): TestSystem {
     limiter,
     attributes,
     catalog,
+    keys,
+    accessTokens,
     createUser,
     login,
     setStatus,

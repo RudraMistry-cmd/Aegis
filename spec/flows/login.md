@@ -20,7 +20,7 @@ SessionTransport {
   issue(session: Session, user: User, now: Timestamp)      -> IssuedCredentials          // tokens.md §7
   resolve(creds: RequestCredentials, now: Timestamp)       -> { sessionId: Id, subjectId: Id, securityVersion: Integer? } | null
   renew(presented: RefreshCredential, now: Timestamp)      -> IssuedCredentials | TOKEN_* | …  // flows/refresh.md; MAY be unsupported (opaque-session transport)
-  describe()                                               -> { revocationMode: "eventual"|"strict", accessTtl?: Duration, ... }
+  describe()                                               -> { revocationMode: "strict", accessTtl?: Duration, ... }   // tokens.md §2.5
 }
 ```
 

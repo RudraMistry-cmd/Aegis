@@ -130,7 +130,16 @@ export type VerifyFailure =
 
 /** `verify` MUST NOT throw for any input. */
 export interface AccessTokenProvider {
+  /**
+   * The lifetime this provider issues, when it fixes one. createAuth then requires the core's
+   * `tokens.accessTtlMs` to equal it (tokens.md §2.3.1: exp − iat equals the configured TTL).
+   */
+  readonly ttlMs?: number;
   issue(input: AccessTokenInput, now: Timestamp): IssuedAccessToken;
+  /**
+   * Proves only that this server issued the token and that it is unexpired. It is NEVER sufficient
+   * on its own: request resolution must then apply strict revocation (tokens.md §2.5).
+   */
   verify(
     token: string,
     now: Timestamp,
@@ -248,6 +257,76 @@ export interface RoleCatalogStore {
   ): Promise<void>;
   getCatalogVersion(): Promise<string | null>;
   // TODO(spec/storage/interfaces.md §8.1): dynamic role methods are out of Phase 1 scope.
+}
+
+// ---------------------------------------------------------------- signing-key store (tokens.md §6)
+
+export type StoredKeyType = 'RSA' | 'HMAC';
+export type StoredKeyStatus = 'pending' | 'active' | 'retired';
+
+/** Public members of an RSA JWK. Never contains private members (d, p, q, dp, dq, qi). */
+export interface PublicJwkMaterial {
+  readonly kty: 'RSA';
+  readonly n: string;
+  readonly e: string;
+}
+
+/** What `createKey` persists. `privateMaterial` is a sealed envelope (see keySealing.ts). */
+export interface KeyStoreMaterial {
+  readonly kid: string;
+  readonly type: StoredKeyType;
+  /** RSA: the public JWK members, published by JWKS. HMAC: null — a secret is never public. */
+  readonly publicMaterial: PublicJwkMaterial | null;
+  /** Opaque sealed bytes. Encrypted when a master key is configured; the store never inspects it. */
+  readonly privateMaterial: Uint8Array;
+}
+
+export interface StoredKey extends KeyStoreMaterial {
+  readonly status: StoredKeyStatus;
+  readonly createdAt: Timestamp;
+  readonly activatedAt: Timestamp | null;
+  readonly retiredAt: Timestamp | null;
+  readonly metadata: Readonly<Record<string, Json>>;
+}
+
+/**
+ * Durable signing keys. Lifecycle (never reversed): pending → active → retired, or pending → retired.
+ *
+ * - `createKey` always creates a PENDING key. A kid is registered forever: reusing one — even after
+ *   `remove` — is CONFLICT, so an old token can never be re-validated by a different key.
+ * - `activate` is atomic: the kid becomes the single active key and the previous active key is
+ *   retired at the same instant. Activating the already-active kid is a no-op; a retired kid can
+ *   never be activated again (PRECONDITION_FAILED). `now` earlier than the key's createdAt or the
+ *   current key's activatedAt (clock skew between instances) is VALIDATION_FAILED, changing nothing.
+ * - `markPending` exists only to assert that a key is (still) pending; no key can RETURN to pending,
+ *   because a retired key that could be re-staged could be re-activated after a compromise.
+ * - `retire` sets `retiredAt` once; repeating it is a no-op that returns false.
+ * - `remove` refuses the active key; `prune` deletes retired keys retired before `olderThan`.
+ * - `atomically` runs `fn` holding the keyring lock, with every call inside it applied atomically
+ *   (one database transaction, or serialized in-process). Startup generation uses it so concurrent
+ *   instances on an empty store create exactly one key.
+ * Every mutation above is individually atomic; at most one key is active at any instant.
+ */
+export interface KeyStore {
+  /** Which adapter this is; the configuration must name the same one. */
+  readonly kind: 'postgres' | 'file' | 'memory';
+  createKey(
+    material: KeyStoreMaterial,
+    meta: { readonly createdAt: Timestamp; readonly metadata?: Record<string, Json> },
+  ): Promise<StoredKey>;
+  getActiveKey(): Promise<StoredKey | null>;
+  getKeyById(kid: string): Promise<StoredKey | null>;
+  /** Ordered by createdAt, then kid. */
+  listKeys(): Promise<readonly StoredKey[]>;
+  markPending(kid: string): Promise<void>;
+  activate(
+    kid: string,
+    now: Timestamp,
+  ): Promise<{ readonly activated: string; readonly retired: string | null }>;
+  retire(kid: string, retiredAt: Timestamp): Promise<boolean>;
+  remove(kid: string): Promise<void>;
+  prune(olderThan: Timestamp): Promise<number>;
+  atomically<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 /** All stores bound together (one transaction handle or the non-transactional set). */

@@ -112,10 +112,9 @@ Defined in `session.md` §6: performed inside `createWithLimit` with reason `evi
 Let *T* be the time at which the revoking call returned success.
 
 1. **Refresh:** every refresh attempt that begins after *T* with any token of the revoked session(s) MUST fail (INV-TOK-06/07). This is **immediate**; it MUST NOT depend on cache TTLs.
-2. **Opaque-session transport and `strict` access tokens:** a request that begins after *T* + `cacheTtl` is rejected (`cacheTtl ≤ 5 s`; `0` ⇒ immediate). A request in progress when revocation commits MAY complete.
-3. **`eventual` access tokens:** requests bearing already-issued access tokens MAY be accepted until `exp + leeway` (maximum `accessTtl + leeway`). The implementation MUST state this bound in `describe()`.
-4. **Listing:** `listActiveByUser` after *T* MUST NOT include the revoked sessions.
-5. **Idempotent replays** after *T* succeed without changes.
+2. **Access tokens and opaque session tokens:** a request that begins after *T* bearing any token of the revoked session(s) is rejected (`tokens.md` §2.5). This is **immediate**; there is no cache window and no `exp`-bounded grace. A request in progress when revocation commits MAY complete.
+3. **Listing:** `listActiveByUser` after *T* MUST NOT include the revoked sessions.
+4. **Idempotent replays** after *T* succeed without changes.
 
 ## 6. Failure modes
 

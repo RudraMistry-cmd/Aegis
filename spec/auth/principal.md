@@ -263,9 +263,9 @@ AccountStateMachine {
 
 1. **Extract.** If no credential material is present → return `null`.
 2. **Verify transport credential** per the configured transport (`tokens.md` §2 or §5). Any verification failure → `null`.
-3. **Load session** by `sid`/session id from the `SessionStore` (via cache if configured). Session absent, revoked, idle-expired, or absolute-expired → `null`. (For access-token transport with `revocation = "eventual"`, this step MAY be skipped; see `tokens.md` §2.5.)
-4. **Strict revocation checks** (when `revocation = "strict"`, or always for opaque-session transport): session not revoked **and** the token's `sv` equals the user's current `securityVersion`. Mismatch → `null`.
-5. **Account state.** Load user status (cache permitted, TTL ≤ 60 s unless strict). If the state's `canLogin = false` → `null`. (For `restricted` states, a Principal is still returned.)
+3. **Load session** by `sid`/session id from the authoritative `SessionStore` (`tokens.md` §2.5: no cache, no replica). Session absent, revoked, idle-expired, or absolute-expired → `null`. This step is never skipped.
+4. **Revocation checks** (always; `tokens.md` §2.5): session not revoked **and** the token's `sv` equals the user's current `securityVersion`. Mismatch → `null`.
+5. **Account state.** Load user status from the authoritative store (`tokens.md` §2.5). If the state's `canLogin = false` → `null`. (For `restricted` states, a Principal is still returned.)
 6. **Build Principal** with `sessionId`, `authMethod`, `authenticatedAt`, `amr` copied from the **session record** (never from request input), `attributes` from the provider (§2.3).
 7. **Touch** the session (sliding idle expiry) subject to the touch-throttle in `session.md` §5. A touch failure MUST NOT fail resolution but MUST be logged.
 8. Return the Principal.

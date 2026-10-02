@@ -231,7 +231,8 @@ describe('P-AUTHN conformance', () => {
       `${parts[0]}.${parts[1]}.tampered`,
       `rt1.${parts[1]}.${parts[2]}`,
       `${parts[0]}.${parts[1]}`,
-      accessToken.replace('at1', 'AT1'),
+      // Case-altered type/header segment (was the stub's `at1` prefix; JWTs have a JSON header).
+      `${(parts[0] as string).toUpperCase()}.${parts[1]}.${parts[2]}`,
       `${accessToken}\u0000`,
       ` ${accessToken} `,
     ];

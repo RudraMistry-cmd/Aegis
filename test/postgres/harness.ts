@@ -10,7 +10,7 @@ import {
   MemoryRateLimiter,
   ScryptHasher,
   SequentialIdGenerator,
-  StubAccessTokenProvider,
+  createJwtAccessTokens,
   SYSTEM_ACTOR,
   type Auth,
   type AuditSink,
@@ -145,15 +145,21 @@ export async function createPgSystem(options: PgSystemOptions = {}): Promise<PgS
   const memoryAudit = options.pgAudit ? null : new MemoryAuditSink();
   const audit: AuditSink = memoryAudit ?? new PostgresAuditSink(storage.client);
   const catalog = options.catalog ?? testCatalog();
+  const { accessTokens } = createJwtAccessTokens(
+    {
+      tokens: { algorithm: 'HS256', issuer: 'aegis-test', audience: 'aegis-test-api' },
+      keys: { rotationEnabled: true },
+    },
+    {
+      keys: [{ kid: 'test-key-1', secret: 'test-secret-value-of-at-least-32-bytes!!' }],
+      clock,
+      ids,
+    },
+  );
   const auth = createAuth({
     storage,
     hasher: new ScryptHasher({ N: 1 << 12, maxConcurrency: 8 }),
-    accessTokens: new StubAccessTokenProvider({
-      secret: 'test-secret-value-of-at-least-32-bytes!!',
-      issuer: 'aegis-test',
-      audience: 'aegis-test-api',
-      ids,
-    }),
+    accessTokens,
     clock,
     random: new CryptoRandom(),
     ids,

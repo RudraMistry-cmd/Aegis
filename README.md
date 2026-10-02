@@ -48,12 +48,29 @@ request. [`docs/POSTGRES.md`](docs/POSTGRES.md) explains how — lock order, iso
 measurements), the SQL for each operation, and error mapping. Point `connectionString` at the
 primary, not a read replica.
 
+## Durable keys and JWKS
+
+```ts
+const { accessTokens, keys, jwks } = await openJwtAccessTokens(
+  { tokens: { algorithm: 'RS256', issuer, audience, ttl: 900_000 },
+    keys: { rotationEnabled: true, storage: 'postgres', generateIfMissing: true, jwks: {} } },
+  { keyStore: storage.keys, clock: new SystemClock(), ids: new CryptoIdGenerator() },
+);
+// serve jwks.handle() at jwks.path (/.well-known/jwks.json)
+```
+
+Signing keys live in the key store (PostgreSQL, a single-process file, or memory), with private
+halves sealed under `AEGIS_MASTER_KEY` (required for PostgreSQL). Every instance loads the same
+keyring, so tokens verify across restarts and instances; rotation is stage → activate. The JWKS
+publishes public RSA keys only. Startup fails with `CONFIG_INVALID` rather than run without a usable
+active key. See [`docs/JWKS.md`](docs/JWKS.md) for caching, rollout and compromise handling.
+
 ## Using it
 
 ```ts
 import {
   createAuth, createMemoryStorage, defineCatalog, definePolicy,
-  ScryptHasher, StubAccessTokenProvider, SystemClock, CryptoRandom, CryptoIdGenerator,
+  createJwtAccessTokens, ScryptHasher, SystemClock, CryptoRandom, CryptoIdGenerator,
 } from 'aegis-core';
 
 const catalog = defineCatalog({
@@ -73,13 +90,20 @@ const postPolicy = definePolicy({
 });
 
 const ids = new CryptoIdGenerator();
+const clock = new SystemClock();
+// RS256 JWT access tokens; private keys come from your secret manager.
+const { accessTokens, keys } = createJwtAccessTokens(
+  {
+    tokens: { algorithm: 'RS256', issuer: 'my-api', audience: 'my-api', ttl: 10 * 60_000 },
+    keys: { rotationEnabled: true },
+  },
+  { keys: [{ kid: '2026-10', privateKey: process.env.JWT_PRIVATE_KEY_PEM! }], clock, ids },
+);
 const auth = createAuth({
   storage: createMemoryStorage(),
   hasher: new ScryptHasher(),
-  accessTokens: new StubAccessTokenProvider({
-    secret: process.env.TOKEN_SECRET!, issuer: 'my-api', audience: 'my-api', ids,
-  }),
-  clock: new SystemClock(), random: new CryptoRandom(), ids,
+  accessTokens,
+  clock, random: new CryptoRandom(), ids,
   catalog, policies: [postPolicy],
 });
 
@@ -94,6 +118,12 @@ const scope = await auth.authz.authorizeScope(principal, 'update', 'post');     
 
 const rotated = await auth.authn.refresh({ refreshToken: credentials.refreshToken });
 await auth.authn.logout({ principal });
+
+// Per request: a valid JWT is necessary but never sufficient — the session decides.
+const caller = await auth.authn.authenticate(bearerToken); // or resolve() → Principal | null
+
+// Key rotation: old tokens keep verifying until they expire; new ones use the new kid.
+keys.rotate({ kid: '2026-11', privateKey: process.env.JWT_NEXT_PRIVATE_KEY_PEM! });
 ```
 
 Every public call takes an explicit `Subject` or `Principal` — there is no ambient "current user".
@@ -138,8 +168,10 @@ src/rbac/          catalog, role and permission resolution, assignment service w
 src/policy/        policy definitions, the decision engine, and the list-scope constraint language
 src/auth/          login, refresh, revoke, request resolution, session and token issuance
 src/storage/memory in-memory reference adapter with simulated atomicity
-src/storage/postgres PostgreSQL adapter: stores, transaction runner, locks, error mapping, audit sink
-migrations/        SQL schema: 001 tables, constraints and integrity triggers; 002 indexes
+src/storage/postgres PostgreSQL adapter: stores, transaction runner, locks, error mapping, audit sink, key store
+src/storage/file   single-process JSON key store (development)
+src/auth/jwt/      JWT provider, key providers (static and persistent), key sealing, JWKS
+migrations/        SQL schema: 001 tables, constraints and integrity triggers; 002 indexes; 003 signing keys
 test/              unit and conformance suites; test/postgres/ for the PostgreSQL adapter
 examples/          runnable in-memory demo
 ```
@@ -150,9 +182,10 @@ users never load `pg`.
 
 ## Status and scope
 
-Phase 1 implemented the core domain; Phase 2 adds the PostgreSQL storage adapter. Not implemented,
-by design: other databases, HTTP or framework integration, a real JWT provider and key rotation, a
-caching layer, email delivery and the verification/password-reset flows that need it, MFA,
+Phase 1 implemented the core domain, Phase 2 the PostgreSQL storage adapter, Phase 3 JWT access
+tokens (RS256/HS256) with `kid`-based key rotation, and Phase 3.5 durable key storage with a JWKS
+endpoint. Not implemented, by design: other databases, HTTP or framework integration, secret-manager
+and HSM integration (documented in `docs/JWKS.md`), a caching layer, email delivery and the verification/password-reset flows that need it, MFA,
 OAuth/OIDC, passkeys, API keys, and multi-tenant scoped assignments. Each gap is marked with a `TODO` naming the spec section, and
 `docs/CONFORMANCE.md` lists them in one place.
 

@@ -23,7 +23,7 @@ An implementation (or adapter) MAY claim conformance to one or more **profiles**
 
 An implementation claiming P-AUTHN **and** P-AUTHZ and a transport profile and a store profile is a *full conformant system*. Third-party adapters (storage, cache, hasher, transport, policy engine) are certified individually against the relevant group.
 
-A claim MUST state: spec version, profile list, and for each optional feature (hierarchy, deny, wildcards, directGrants, dynamicRoles, scopes, reuseGrace, strict revocation) whether it is implemented. Tests tagged `[feature: X]` apply only if X is claimed. A claimed-but-failing feature voids the claim for that feature; an unclaimed feature MUST be inert (CFG-03).
+A claim MUST state: spec version, profile list, and for each optional feature (hierarchy, deny, wildcards, directGrants, dynamicRoles, scopes, reuseGrace) whether it is implemented. Strict revocation is not optional (`tokens.md` §2.5). Tests tagged `[feature: X]` apply only if X is claimed. A claimed-but-failing feature voids the claim for that feature; an unclaimed feature MUST be inert (CFG-03).
 
 ## 2. Harness requirements
 
@@ -240,13 +240,13 @@ A conformance harness MUST provide:
 | PRN-01 | Principal after login has `id`, `type`, `authMethod`, `authenticatedAt` (= session creation), `sessionId`, `amr` (e.g. `["pwd"]`); `toSubject` drops auth-specific fields. |
 | PRN-02 | Serialized Principal (JSON/string/log) contains none of: password, hash, access/refresh/session token, key material. |
 | PRN-03 | Principal is immutable: attempts to modify any field (including nested `attributes`) do not alter other holders' view. |
-| PRN-04 | `resolve` returns `null` (no error) for: no credential, malformed, bad signature, expired, revoked session, expired session, deleted user, `canLogin=false`, `sv` mismatch (strict). |
-| PRN-05 | `resolve` raises `STORAGE_UNAVAILABLE` (never `null`, never a Principal) when the session store (strict/session mode), user store, or attribute provider is unavailable. |
+| PRN-04 | `resolve` returns `null` (no error) for: no credential, malformed, bad signature, expired, revoked session, expired session, deleted user, `canLogin=false`, `sv` mismatch. |
+| PRN-05 | `resolve` raises `STORAGE_UNAVAILABLE` (never `null`, never a Principal) when the session store, user store, or attribute provider is unavailable. |
 | PRN-06 | `amr`, `authMethod`, `authenticatedAt` come from the session: a request carrying forged equivalents (header/claim) has no effect. |
 | PRN-07 | After a refresh, `authenticatedAt` and `amr` are unchanged. |
 | PRN-08 | `tenantId` taken from request input is ignored; the Principal's tenant is the identity layer's. |
 | PRN-09 | A `restricted` state yields a Principal whose `attributes.accountRestricted` is `true`. |
-| PRN-10 | Principal not cached across requests: after the user is suspended and sessions revoked, the next `resolve` (strict/session) returns `null`. |
+| PRN-10 | Principal not cached across requests: after the user is suspended and sessions revoked, the next `resolve` returns `null`. |
 
 ### 6.2 ID / CRED / STATE — identity, credentials, account state
 
@@ -378,7 +378,7 @@ A conformance harness MUST provide:
 | TOK-ACC-13 | TTL > 60 min without override ⇒ `CONFIG_INVALID`; with override ⇒ starts and emits `config.warning`. |
 | TOK-ACC-14 | [JWT] Headers with `crit`, `jwk`, `jku`, `x5u`, `x5c`, `zip` ⇒ failure. |
 | TOK-ACC-15 | Key rotation: tokens signed by the previous key verify during overlap, fail after the old key is removed; new tokens use the new `kid`; no valid unexpired token fails during the documented procedure. |
-| TOK-ACC-16 | `eventual` mode: `verify`/`resolve` performs zero store reads on the hot path (instrumented); `strict` mode: ≥ 1 revocation check. |
+| TOK-ACC-16 | Every `resolve` of a correctly signed, unexpired token performs the revocation check of `tokens.md` §2.5 against the authoritative store (instrumented: ≥ 1 session read and ≥ 1 user read); none is answered from a cache. |
 | TOK-REF-01 | Refresh token ≥ 256 bits; 10⁵ issued tokens are unique; encoding length consistent. |
 | TOK-REF-02 | Dump of all stored bytes (all stores, audit, logs) never contains a raw refresh/session/one-time token; only digests. |
 | TOK-REF-03 | No API returns a raw token after issuance (session listing, refresh-record reads, audit). |
@@ -402,7 +402,7 @@ A conformance harness MUST provide:
 | REF-02 | After a refresh, presenting the previous refresh token ⇒ `TOKEN_INVALID` (reuse path, REF-04). |
 | REF-03 | **Concurrent presentation:** 50 simultaneous refreshes with the same active token: exactly one returns credentials; 49 return `TOKEN_INVALID`; (grace 0) the family and session end up revoked; exactly one `refresh.reuse_detected` event is **not** required but ≥ 1 is. Repeat ≥ 200 schedules. |
 | REF-04 | **Token reuse:** refresh with T1 (success ⇒ T2). Present T1 again ⇒ `TOKEN_INVALID`; **session revoked and family revoked**; audit `refresh.reuse_detected` severity high with session/user/token ids (no token value). |
-| REF-05 | Continuing REF-04: the legitimate T2 now ⇒ `TOKEN_INVALID`; access tokens previously issued: valid until `exp` in `eventual`, rejected next request in `strict`. |
+| REF-05 | Continuing REF-04: the legitimate T2 now ⇒ `TOKEN_INVALID`; access tokens previously issued are rejected on their next use. |
 | REF-06 | Refresh token past its `expiresAt` ⇒ `TOKEN_EXPIRED`; session not reactivated. |
 | REF-07 | Repeated refreshes up to `absoluteExpiresAt`: the last successful successor's `expiresAt` is clamped; after the absolute instant ⇒ `TOKEN_EXPIRED`/`TOKEN_INVALID`; no way to continue. |
 | REF-08 | State with `canRefresh=false` (restricted) ⇒ `ACCOUNT_RESTRICTED`; session revoked; `suspended` ⇒ sessions already revoked ⇒ `TOKEN_INVALID`. |
@@ -434,9 +434,9 @@ A conformance harness MUST provide:
 | REV-07 | Logout by presenting an expired or already-used refresh token revokes the session; by an unknown token ⇒ success without effect. |
 | REV-08 | Logout with malformed input never throws and returns success. |
 | REV-09 | Remote revoke: owner may revoke own other session; non-owner without permission ⇒ `NOT_FOUND`; admin with `session:revoke` in the same tenant ⇒ success; admin of another tenant ⇒ denied by wall. |
-| REV-10 | `strict` mode: request after revocation + `cacheTtl` ⇒ `null`; with `cacheTtl=0` ⇒ immediately. |
-| REV-11 | `eventual` mode: a previously issued access token resolves until `exp`, fails at `exp + leeway`; `describe()` reports the bound. |
-| REV-12 | Password change/reset ⇒ sessions revoked per `login.md`, `securityVersion` bumped; strict-mode tokens of the user rejected thereafter. |
+| REV-10 | The first request after revocation returns bearing a still-unexpired access token of the revoked session ⇒ `null` (no cache window). |
+| REV-11 | A configuration requesting `eventual` (or any non-`strict`) revocation ⇒ `CONFIG_INVALID` at construction; `describe()` reports `revocation: "strict"`. |
+| REV-12 | Password change/reset ⇒ sessions revoked per `login.md`, `securityVersion` bumped; tokens of the user rejected thereafter. |
 | REV-13 | Storage failure during logout ⇒ `STORAGE_UNAVAILABLE` (never success); retry succeeds; no partial state. |
 | REV-14 | `invalidateCredentials` bumps `securityVersion`, revokes all sessions, requires authorization; unauthorized ⇒ `FORBIDDEN`. |
 | REV-15 | `revokeEverything` is resumable: interrupted halfway, rerun completes; reports `partial` until done; emits `high` audit. |

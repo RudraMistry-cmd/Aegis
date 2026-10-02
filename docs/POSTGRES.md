@@ -21,10 +21,16 @@ const auth = createAuth({ storage, audit: new PostgresAuditSink(storage.client),
 
 ---
 
-## 1. Isolation level choice
+## 1. Isolation Strategy
 
-**Default: READ COMMITTED + explicit row locks taken in one global order.**
-**Supported: SERIALIZABLE** (`isolation: 'serializable'`), with automatic retry.
+This implements `spec/storage/interfaces.md` §11.1.
+
+**Default: READ COMMITTED + row-level locking.** Critical rows are locked with `SELECT … FOR UPDATE`
+(`FOR NO KEY UPDATE` for the user row, so foreign-key checks are not blocked), always in the one
+deterministic order of §2, and every deciding read is a statement issued after the lock is granted.
+**Optional: SERIALIZABLE** (`isolation: 'serializable'`), with automatic retry.
+
+### Why SERIALIZABLE was rejected as the default: retry overhead
 
 Both were implemented, and the full concurrency suite runs under both. Every invariant holds under
 both. The difference is liveness, and it was measured on PostgreSQL 17 (four runs of
@@ -44,27 +50,24 @@ conflict and aborts it. With N logins queued for one user, each commit invalidat
 contention costs O(N²) attempts. The outcome is always correct (an abort, never an over-allocated
 limit), but under a burst a legitimate user can be refused.
 
-**Why READ COMMITTED + locks is correct.** Under READ COMMITTED every *statement* takes a fresh
-snapshot. Each flow first takes the row lock that serializes it (§2), and every statement after the
-lock grant therefore sees everything committed by the transaction it waited for. The flows that need
-serializable behaviour get it from the lock, deterministically, without aborts:
+### Guarantees achieved
 
-| Anomaly spec §11.3 guards against | Prevented by |
+Under READ COMMITTED every *statement* takes a fresh snapshot. Each flow first takes the lock that
+serializes it, and every statement after the lock grant therefore sees everything committed by the
+transaction it waited for. The flows that need serializable outcomes (spec §11 rule 3) get them from
+the lock, deterministically, without aborts:
+
+| Guarantee | Achieved by |
 |---|---|
-| Session limit write-skew (two logins both count *n < limit*) | per-user row lock; count runs after the grant (§3) |
-| Refresh token used twice | token row lock + `status = 'active'` CAS (§2) |
-| Refresh minting a token for a session being revoked | both take the same per-user lock (§4) |
-| Last-superuser write-skew (two removals both count 2 holders) | per-role advisory lock held across count and delete (§5) |
+| **Atomic refresh** — a token is consumed exactly once | per-user row lock, then token row `FOR UPDATE` + `status = 'active'` CAS; consume and rotate in one unit (§3) |
+| **Correct session limits** — never exceeded under parallel logins | per-user row lock; the count runs after the grant (§4) |
+| **Immediate revocation** — no token of a revoked session is minted or accepted | revoke and refresh take the same per-user lock; resolution reads the primary on every request (§5) |
+| Last-superuser protection (two removals both count 2 holders) | per-role advisory lock held across count and delete (§2) |
 | Concurrent account-state changes | `version` compare-and-set in one `UPDATE` (re-evaluated after the lock wait) |
 | Escalation guard reading stale grants | reads join the unit's transaction (ambient routing, §6) |
 
-> **Deviation D-10 (see [CONFORMANCE.md](CONFORMANCE.md)).** `spec/storage/interfaces.md` §11.3
-> literally says SERIALIZABLE isolation MUST be used for those flows. The default provides
-> serializable *outcomes* by locking instead. A deployment that needs the letter of §11.3 sets
-> `isolation: 'serializable'`; it is fully supported and passes the same suite, given a larger retry
-> budget (`maxTransactionAttempts`) for bursty same-user traffic. Recommendation: amend §11.3 to
-> require serializable outcomes, demonstrated by the conformance race suite, rather than one
-> isolation level.
+SERIALIZABLE remains available for deployments that want SSI as a second safety net; it passes the
+same suite given a larger retry budget (`maxTransactionAttempts`) for bursty same-user traffic.
 
 **Retry strategy.** A transaction is re-run from the start only when the server reports it aborted
 it: `40001 serialization_failure` or `40P01 deadlock_detected`. Those guarantee nothing committed, so
@@ -85,7 +88,11 @@ Every flow acquires a prefix of one global order, never out of order (`src/stora
 3. **`refresh_tokens` rows** — `UPDATE` / `SELECT … FOR UPDATE`
 
 Every store operation that changes a session or a refresh token locks the owning user's row
-**first**, even when it only needs one token. Two transactions on the same user therefore queue at
+**first**, even when it only needs one token. Inside a unit of work, **reading** a user
+(`users.getById`) also takes this lock, because that read is what a per-user flow decides on —
+login checks the account state and copies the `securityVersion` into the new session from it — and
+under READ COMMITTED a deciding read must hold the lock (spec §11.1 rule 2). Without it, a suspension
+could commit between that read and the session insert (found in Phase 3; see CONFORMANCE.md). Two transactions on the same user therefore queue at
 step 1 and can never hold steps 2–3 in opposite orders. Different users share no locks, and no flow
 ever locks two users. Hence no cycle, hence no deadlock.
 
@@ -99,8 +106,9 @@ cannot close a cycle. (`bumpSecurityVersion` is a single `UPDATE` of the user ro
 takes exactly lock step 1.)
 
 **Role-holder locks** (`pg_advisory_xact_lock(hashtextextended('aegis.role:' || name, 0))`) are a
-separate domain: the assignment flows take them and never take user/session/token locks, and the
-session flows never take them. Multiple roles are always locked in ascending name order (the
+second domain. Only `assign` holds a user lock (its target, read first) while it acquires a role
+lock, always in the order user → role; no transaction holding a role lock ever waits for a user,
+session or token lock, and the session flows never take role locks. Multiple roles are always locked in ascending name order (the
 catalog's sorted role list). A hash collision only adds serialization, never incorrectness.
 
 Every lock wait is bounded by `lock_timeout` (default 5 s) and every statement by
@@ -210,7 +218,7 @@ UPDATE aegis.refresh_tokens SET status = 'revoked', revoked_reason = 'session_re
 2. *Request resolution* (`resolve`) reads the session and the user's `securityVersion` from the
    database on every request — there is no cache in front of it — with a fresh READ COMMITTED
    statement snapshot, so a revocation is visible to the very next request. This is the strict
-   revocation mode the project has resolved on (Phase 1 deviation D-2).
+   revocation that `spec/auth/tokens.md` §2.5 requires; eventual revocation is not supported.
 3. **Operational requirement:** point `connectionString` at the **primary**. A lagging read replica
    would serve stale session state, which spec §1.2 class R forbids for these reads.
 4. The schema makes revocation terminal: a trigger rejects any change to a revoked session row, and
@@ -359,6 +367,7 @@ file creates and drops its own database, so files run in parallel without interf
 | `concurrency.pg-test.ts` | 13 × 2 | Every race invariant, on parallel connections, under **both** isolation levels |
 | `transactions.pg-test.ts` | 16 | Rollback, swallowed-error refusal, retry on `40001`, ambient routing, error mapping, lock timeout, triggers, audit append-only, migrations, housekeeping, INV-ID-01 |
 | `flows.pg-test.ts` | 11 | Phase 1 conformance flows end to end through `createAuth`, audit persisted to PostgreSQL |
+| `keys.pg-test.ts` | 23 | KeyStore contract (12), sign/verify across rotation, restart persistence, concurrent startup and rotation from separate pools, master key required, ciphertext-only storage, schema guards (§13) |
 
 The Phase 1 suite (`npm test`, 121 tests) still runs against the in-memory adapter, unchanged.
 
@@ -374,7 +383,66 @@ Phase 1 test:
    The events are now emitted after commit; the unit contains storage work only.
 2. **The in-memory `touch` could extend an idle-expired session** (§5.5 "a touch MUST NOT resurrect",
    INV-SESS-02). It now refuses, matching the PostgreSQL adapter; the shared contract test covers it.
-3. **The refresh flow passes a store-level `PRECONDITION_FAILED` from `rotate` through unmapped**
-   (it should be `TOKEN_INVALID`). Not changed in the domain: the adapter's lock order makes that path
-   unreachable (§5), and the refresh-vs-logout race test asserts it never surfaces. Flagged for a
-   future domain fix.
+3. **The refresh flow passed a store-level `PRECONDITION_FAILED` from `rotate` through unmapped.**
+   Fixed: `RefreshService.refresh` maps it to `TOKEN_INVALID` at its public boundary
+   (errors.md §3), covered by a unit test. The adapter's lock order also makes that path unreachable
+   (§5), so this is defence in depth.
+
+---
+
+## 13. Signing keys (Phase 3.5) — `PostgresKeyStore`
+
+`storage.keys` persists JWT signing keys so that every instance signs and verifies with the same
+keyring and keys survive restarts. Wiring, rotation and the JWKS endpoint are described in
+[`JWKS.md`](JWKS.md); this section covers the schema and its guarantees.
+
+### Schema (`migrations/003_create_keys_table.sql`)
+
+| Table | Columns | Notes |
+|---|---|---|
+| `signing_key_registry` | `kid` PK, `registered_at_ms` | Every kid ever created. Never deleted from, so a kid can never be reused, not even after `remove` (`CONFLICT`). |
+| `signing_keys` | `kid` PK → registry, `type` `RSA`\|`HMAC`, `status` `pending`\|`active`\|`retired`, `created_at_ms`, `activated_at_ms`, `retired_at_ms`, `public_material` jsonb, `private_material` bytea, `metadata` jsonb | One row per live key; `remove` and `prune` delete rows here only. |
+
+**Invariants enforced by the database itself:**
+
+| Mechanism | Invariant |
+|---|---|
+| partial unique index `signing_keys_one_active ON ((true)) WHERE status = 'active'` | at most one active key, whatever the application does |
+| CHECK `signing_keys_private_sealed`: `private_material` starts with `AEK1` | no plaintext private key is ever stored in PostgreSQL |
+| CHECK on `public_material`: NULL for HMAC; for RSA exactly `{kty, n, e}` | private members (`d`, `p`, …) cannot be stored in the public column |
+| CHECKs `status_times`, `time_order` | timestamps match the status; `created ≤ activated ≤ retired` |
+| trigger `signing_keys_guard` | a retired key is frozen (`AE030`); no key returns to pending (`AE031`); kid, type, material and `created_at_ms` are immutable (`AE032`) |
+
+`private_material` is an AES-256-GCM envelope (`AEK1 | nonce(12) | tag(16) | ciphertext`) sealed in
+the application under the master key, with `aegis-signing-key:v1:<kid>` as additional data. The
+database never sees the master key or a plaintext private key. Opening the provider with
+`storage: 'postgres'` and no master key is `CONFIG_INVALID`.
+
+### Concurrency: the keyring lock
+
+Every mutation runs in `keys.atomically`, a transaction that first takes
+`pg_advisory_xact_lock(hashtextextended('aegis.keyring', 0))`. It serialises rotations and makes
+"create a key if the store is empty" (first start of several instances) produce exactly one key.
+`activate` retires the current active key and activates the new one in that same transaction, the
+old one first so the one-active index is never violated mid-way; an activation instant earlier than
+the current key's activation (clock skew between instances) is refused with `VALIDATION_FAILED` and
+changes nothing.
+
+This is a **third lock domain**: key operations take no user, session, token or role lock, and no
+authentication flow takes the keyring lock, so it cannot join a deadlock cycle with §2. Signing and
+verification never touch the database; they use each instance's in-memory copy of the keyring.
+
+### Reads and pruning
+
+The provider reloads the whole keyring (`listKeys`) every `refreshIntervalMs` and on an unseen kid.
+The table holds a handful of rows; `signing_keys_status_idx` serves `getActiveKey` and
+`signing_keys_retired_at_idx` (retired rows only) serves `prune(olderThan)`, which deletes retired
+keys whose `retired_at_ms < olderThan`. The provider prunes only keys that can no longer verify
+anything (`retiredAt + ttl + leeway ≤ now`).
+
+### Master key handling
+
+The master key comes from one environment variable (`AEGIS_MASTER_KEY` by default). Distributing it
+to instances — a cloud secret manager, Kubernetes Secrets, Vault — is the deployment's job and is not
+implemented here; see [`JWKS.md`](JWKS.md) §7. Keep it out of the database and its backups: a
+database dump then contains only ciphertext.

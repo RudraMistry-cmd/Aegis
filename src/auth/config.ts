@@ -52,7 +52,8 @@ export interface TokenConfigInput {
   readonly refreshIdleTtlMs?: number;
   /** tokens.md §3.5: default 0 (disabled), maximum 10 000 ms. */
   readonly reuseGraceMs?: number;
-  readonly revocation?: 'eventual' | 'strict';
+  /** tokens.md §2.5: strict revocation is the only mode; anything else is CONFIG_INVALID. */
+  readonly revocation?: 'strict';
 }
 
 export interface AuthConfigInput {
@@ -86,7 +87,7 @@ export interface ResolvedAuthConfig {
     readonly accessTtlMs: number;
     readonly refreshIdleTtlMs: number;
     readonly reuseGraceMs: number;
-    readonly revocation: 'eventual' | 'strict';
+    readonly revocation: 'strict';
   };
   readonly revealRestrictedState: boolean;
   readonly enumerationSafeRegistration: boolean;
@@ -220,12 +221,13 @@ export function resolveAuthConfig(input: AuthConfigInput = {}): ResolvedAuthConf
   } else if (reuseGraceMs > 0) {
     warnings.push({ path: 'tokens.reuseGraceMs', message: 'refresh reuse grace is enabled' });
   }
-  const revocation = t.revocation ?? 'eventual';
-  if (revocation !== 'eventual' && revocation !== 'strict') {
+  const revocation = t.revocation ?? 'strict';
+  if (revocation !== 'strict') {
+    // tokens.md §2.5: eventual revocation is not supported.
     v.push({
       path: 'tokens.revocation',
       rule: 'token.revocation',
-      message: 'must be eventual or strict',
+      message: 'only strict revocation is supported',
     });
   }
 

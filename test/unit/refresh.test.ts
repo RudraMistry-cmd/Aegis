@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createTestSystem, DAY, MINUTE } from '../support/fixtures.js';
-import { isAuthError } from '../../src/index.js';
+import { authError, isAuthError, resolveAuthConfig } from '../../src/index.js';
 
 async function codeOf(fn: () => Promise<unknown>): Promise<string> {
   try {
@@ -245,5 +245,39 @@ describe('refresh reuse attack', () => {
     await sys.auth.authn.logout({ principal });
     assert.equal(await codeOf(() => sys.auth.authn.refresh({ refreshToken })), 'TOKEN_INVALID');
     assert.equal(sys.clock.now() > 0 && DAY > 0, true);
+  });
+});
+
+describe('refresh error mapping', () => {
+  it('maps a store-level PRECONDITION_FAILED to TOKEN_INVALID (errors.md §3)', async () => {
+    const sys = createTestSystem();
+    await sys.createUser('alice@example.com');
+    const { refreshToken } = await sys.login('alice@example.com');
+    // Simulate the store refusing the rotation, e.g. because the session was revoked concurrently.
+    const original = sys.storage.refreshTokens.rotate.bind(sys.storage.refreshTokens);
+    sys.storage.refreshTokens.rotate = async () => {
+      throw authError('PRECONDITION_FAILED');
+    };
+    try {
+      try {
+        await sys.auth.authn.refresh({ refreshToken });
+        assert.fail('refresh should have failed');
+      } catch (e) {
+        assert.ok(isAuthError(e), `expected an AuthError, got ${String(e)}`);
+        assert.equal(e.code, 'TOKEN_INVALID');
+        // PRECONDITION_FAILED never reaches the caller, not even inside the serialized error.
+        assert.ok(!JSON.stringify(e.toJSON()).includes('PRECONDITION_FAILED'));
+      }
+    } finally {
+      sys.storage.refreshTokens.rotate = original;
+    }
+  });
+
+  it('rejects a configuration requesting eventual revocation (tokens.md §2.5)', () => {
+    assert.throws(
+      () => resolveAuthConfig({ tokens: { revocation: 'eventual' as unknown as 'strict' } }),
+      (e: unknown) => isAuthError(e) && e.code === 'CONFIG_INVALID',
+    );
+    assert.equal(resolveAuthConfig({}).tokens.revocation, 'strict');
   });
 });

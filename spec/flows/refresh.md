@@ -51,12 +51,12 @@ Triggered when `consume` returned `reused`.
 2. **Revoke.** In one serializable `UnitOfWork`: `SessionStore.revoke(token.sessionId, "refresh_reuse_detected")` and `RefreshTokenStore.revokeFamily(token.sessionId, "reuse_detected")`.
 3. **Alert.** Audit `refresh.reuse_detected` (severity `high`) with `sessionId`, `userId`, `tokenId` (never the token value). The implementation MAY also send a `security_alert` notification to the user via `Notifier` (not awaited).
 4. **Respond** `TOKEN_INVALID`. The response MUST be identical to step 4a (no reuse hint).
-5. Any access token already issued for that session remains acceptable until `exp` under `eventual` revocation (`tokens.md` §2.5); under `strict` revocation it is rejected on its next use.
+5. Any access token already issued for that session is rejected on its next use (strict revocation, `tokens.md` §2.5).
 
 ## 4. Concurrency guarantees
 
 1. **Exactly one winner.** If N ≥ 2 requests present the same active token concurrently, exactly one proceeds past step 4 (`consumed`). All others observe `reused` and follow §3. With `reuseGrace = 0` they cause the family to be revoked — including the winner's successor. Clients MUST therefore perform refresh as *single-flight*. (This is a deliberate trade for theft detection; deployments with unreliable clients MAY set `reuseGrace` up to 10 s.)
-2. **Refresh vs revoke.** Under concurrent `refresh` and `revokeSession`/`logout`: whichever commits first wins; after the revoke commits, no refresh may return credentials (step 9 fails, INV-TOK-07). A refresh that committed before the revoke yields tokens that are immediately revoked; the access token is valid for at most `accessTtl + leeway` under `eventual`.
+2. **Refresh vs revoke.** Under concurrent `refresh` and `revokeSession`/`logout`: whichever commits first wins; after the revoke commits, no refresh may return credentials (step 9 fails, INV-TOK-07). A refresh that committed before the revoke yields tokens that are immediately revoked; its access token is rejected on its next use (`tokens.md` §2.5).
 3. **Refresh vs role change.** A role/permission change is independent of refresh; the new access token carries no permissions, so subsequent authorization reflects the new assignments (INV-AUTHZ-06).
 4. **Refresh vs account state change.** If the state change to `canRefresh = false` commits before step 6, the refresh fails; if after step 9 it commits, the state change revokes the session and the new tokens (INV-SESS-06).
 5. **Crash safety.** A crash between steps 4 and 9 loses availability for that session only (§2.1), never safety.

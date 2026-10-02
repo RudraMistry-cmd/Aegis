@@ -370,10 +370,34 @@ UnitOfWork.run(fn: (tx: StoreSet) -> T, options?: { isolation: "serializable" | 
 
 1. All store operations performed through `tx` MUST be **A2**: committed together or rolled back together when `fn` completes normally or fails.
 2. If `fn` fails (throws/returns failure) **no** effect MUST persist.
-3. Isolation `serializable` MUST be used for: assignment with escalation checks, last-superuser protection, session limit enforcement, password reset/change, account state changes. Adapters that cannot provide serializable isolation for these flows MUST NOT claim conformance for them.
+3. Isolation MUST follow §11.1. Whatever the level, the following flows MUST have serializable outcomes: assignment with escalation checks, last-superuser protection, session limit enforcement, password reset/change, account state changes. Adapters that cannot provide that for these flows MUST NOT claim conformance for them.
 4. `fn` MUST NOT perform non-storage side effects (notifications, audit emission, hashing) — the core performs those *after* commit. Adapters MAY retry `fn` on serialization conflict; therefore `fn` MUST be free of external side effects and idempotent in memory.
 5. Nested `run` MUST join the outer transaction.
 6. An adapter that cannot provide multi-record atomicity (e.g., a document store without transactions) MUST declare which compound operations it supports and MUST NOT be used for flows depending on the rest (`conformance.md` adapter profile `A-LITE` vs `A-FULL`).
+
+### 11.1 Isolation Level Requirement
+
+1. **Default: READ COMMITTED.** Transactional (SQL) adapters MUST run units of work, and their own
+   multi-statement operations, at READ COMMITTED unless configured otherwise.
+2. **Critical rows MUST be locked with `SELECT … FOR UPDATE`** (or the weaker `FOR NO KEY UPDATE`
+   where foreign-key checks must not be blocked) before they are read for a decision that the same
+   transaction then acts on. Critical rows are at least: the refresh-token row in `consume`, `rotate`
+   and `replaceActiveSuccessor`; and the owning user's row, which serializes every operation that
+   creates, revokes or limits that user's sessions and tokens. Every read that decides the outcome
+   MUST be a statement issued *after* the lock is granted, so it sees all work committed by the
+   transaction it waited for. Where the protected state has no single row (e.g. the set of holders of
+   a superuser role, `rbac/assignments.md` §6.5), a transaction-scoped lock on an equivalent key
+   MUST be used instead.
+3. **Lock ordering MUST be deterministic.** An adapter MUST define one global lock order, document
+   it, and acquire locks only as a prefix of it, so no two transactions can wait on each other in a
+   cycle. Multiple rows of one kind MUST be locked in a fixed order (e.g. ascending key).
+4. **SERIALIZABLE is optional but requires retry handling.** An adapter MAY offer SERIALIZABLE. If it
+   does, it MUST re-run the whole unit from the start on a serialization failure or a detected
+   deadlock, with a bounded number of attempts and backoff, and then fail with `Unavailable`. It
+   MUST NOT retry on connection loss or any other error whose commit outcome is unknown (§1.1.2).
+5. Every lock wait MUST be bounded (§1.1.3).
+6. An adapter whose engine has no isolation levels (e.g. the single-process in-memory reference,
+   which serializes all units) satisfies this section by providing at least the same guarantees.
 
 ## 12. Adapter conformance
 
@@ -381,7 +405,7 @@ An adapter claims one of:
 
 | Profile | Meaning |
 |---|---|
-| `A-FULL` | Implements all ports with A1/A2 guarantees including `UnitOfWork` serializable isolation. Required for production multi-instance deployments. |
+| `A-FULL` | Implements all ports with A1/A2 guarantees and the isolation requirement of §11.1. Required for production multi-instance deployments. |
 | `A-LITE` | Implements all ports with A1 guarantees but not cross-record A2 (e.g. a single-document store). Flows needing A2 MUST be implemented through documented single-record equivalents; the adapter MUST list unsupported compound operations. Not suitable where `revokeSessionsOnEnter`-atomic semantics are required unless the equivalents are proven. |
 
 Both profiles MUST pass the storage-contract groups of `conformance.md` (`STO`).

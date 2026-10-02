@@ -164,6 +164,48 @@ describe('PostgreSQL transactions and integrity', () => {
     assert.equal(revoked, true);
   });
 
+  it('a user read inside a unit holds the user lock: a suspension cannot slip in (INV-STATE-01)', async () => {
+    // Reproduces the login unit of issue.ts deterministically: read the user's state, then create
+    // a session based on it. A suspension (status + revoke-all + securityVersion bump) is attempted
+    // in between. If the read did not lock the user, the suspension would commit in the gap and the
+    // login would then create an ACTIVE session for a suspended account.
+    const id = await user();
+    let readDone!: () => void;
+    const read = new Promise<void>((r) => (readDone = r));
+    let proceed!: () => void;
+    const gate = new Promise<void>((r) => (proceed = r));
+
+    const login = s.uow.run(async (tx) => {
+      const u = await tx.users.getById(id); // the deciding read
+      readDone();
+      await gate; // the suspension is attempted while we sit here
+      if (u?.status !== 'active') return 'restricted';
+      await tx.sessions.createWithLimit(
+        session(uid('s'), id, { securityVersionAtIssue: u.securityVersion }),
+        10,
+        'evict-oldest',
+        START,
+      );
+      return 'created';
+    });
+
+    await read;
+    const suspension = s.uow.run(async (tx) => {
+      const u = await tx.users.getById(id);
+      await tx.users.setStatus(id, 'suspended', u?.version as number, START);
+      await tx.sessions.revokeAllForUser(id, null, 'account_state', START);
+      await tx.users.bumpSecurityVersion(id, START);
+    });
+    // Give the suspension ample time to commit if nothing is stopping it.
+    await new Promise((r) => setTimeout(r, 300));
+    proceed();
+    await Promise.all([login, suspension]);
+
+    // Whatever the order, a suspended account ends with no active session.
+    assert.equal((await s.users.getById(id))?.status, 'suspended');
+    assert.equal(await s.sessions.countActive(id, START), 0);
+  });
+
   it('rejects a query issued after its unit has finished', async () => {
     const id = await user();
     let late: unknown;
@@ -386,7 +428,7 @@ describe('PostgreSQL transactions and integrity', () => {
     );
     assert.deepEqual(
       versions.rows.map((r: { version: string }) => r.version),
-      ['001_init', '002_indexes'],
+      ['001_init', '002_indexes', '003_create_keys_table'],
     );
   });
 

@@ -16,7 +16,7 @@ Key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, **MAY** are as def
 
 ### 2.1 Purpose
 
-A short-lived bearer credential proving that a particular Session was authenticated, so that request handling need not consult the store on the hot path when `revocation = "eventual"`.
+A short-lived bearer credential proving that a particular Session was authenticated. It never substitutes for the Session: every acceptance is subject to the session check of §2.5.
 
 ### 2.2 Provider contract
 
@@ -69,14 +69,27 @@ Constraints:
 
 Access tokens MUST NOT carry roles or permissions by default. The authorization layer resolves roles and permissions server-side at decision time (`rbac/assignments.md` §6). Consequently, a role or permission change takes effect for existing sessions without re-issuing tokens (INV-AUTHZ-06). An implementation MAY offer an opt-in "roles hint" claim for *downstream non-authoritative use* but the authorization engine MUST NOT consult it.
 
-### 2.5 Revocation modes
+### 2.5 Revocation Semantics
 
-| Mode | Behavior | Guarantee |
-|---|---|---|
-| `eventual` (default) | `verify` succeeds on signature + time alone. No store lookup. | After a session is revoked or an account is disabled, previously issued access tokens MAY be accepted until their `exp` (+ leeway). The maximum exposure window is `accessTtl + leeway`. Refresh MUST fail immediately. |
-| `strict` | After `verify`, resolution MUST check that (a) the session is not revoked/expired, and (b) `sv` equals the user's current `securityVersion`, via the `SessionStore`/`Cache`. | A revoked session or invalidated user is rejected on the next request (subject to the cache staleness bound `cacheTtl ≤ 5 s` configurable; with `cacheTtl = 0` immediately). |
+Aegis enforces **strict** revocation. There is exactly one mode.
 
-Implementations MUST document the active mode, and MUST include it in `describe()` output.
+1. **Revoked sessions invalidate tokens immediately.** Once a revocation has committed, every token
+   bound to that session — access tokens and refresh tokens alike — is invalid for every request that
+   begins afterwards. There is no exposure window bounded by `exp`.
+2. **Tokens MUST NOT be accepted after session revoke.** A valid signature and an unexpired `exp` are
+   necessary but never sufficient. After `verify`, request resolution MUST check, for every request,
+   that (a) the session exists and is neither revoked nor expired, and (b) the token's `sv` equals
+   the user's current `securityVersion` (`principal.md` §7.2).
+3. **The Session is the single source of truth.** These checks MUST read the authoritative store. They
+   MUST NOT be answered from a cache, a replica, or any other copy that can lag a committed
+   revocation, and token contents MUST NOT stand in for the Session's state.
+4. **Eventual revocation is NOT supported.** An implementation MUST NOT offer a mode in which a token
+   of a revoked session is accepted until its `exp`. A configuration requesting any revocation mode
+   other than `"strict"` MUST be rejected at construction with `CONFIG_INVALID`.
+
+This is what `INV-SESS-01` requires ("a credential referring to a missing, revoked, or expired session
+never yields a Principal") and extends to access tokens the immediacy that `INV-TOK-06` already
+requires of refresh. `describe()` MUST report `revocation: "strict"`.
 
 ### 2.6 JWT profile (informative mapping, normative for implementations that offer a "JWT" provider)
 
@@ -177,7 +190,7 @@ OneTimeTokenRecord {
 ## 5. Opaque session token (server-side session transport)
 
 1. The credential is a random string with ≥ 256 bits of entropy; the Session's server-side lookup key is its digest (§1.5). (The Session `id` MAY be a distinct, non-secret value.)
-2. Each request resolution MUST consult the store (or a cache whose `ttl ≤ 5 s`), so revocation is immediate within that bound; `strict` semantics (§2.5) always apply.
+2. Each request resolution MUST consult the authoritative store, so revocation is immediate (§2.5).
 3. Rotation of the session token on privilege change (e.g. step-up) MAY be offered; if offered it MUST invalidate the previous token atomically.
 4. On login a **new** token MUST always be generated (INV-SESS-03).
 

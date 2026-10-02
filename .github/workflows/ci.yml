@@ -74,6 +74,7 @@ jobs:
           spec/flows/revoke.md
           migrations/001_init.sql
           migrations/002_indexes.sql
+          migrations/003_create_keys_table.sql
           src/storage/postgres/postgresClient.ts
           src/storage/postgres/unitOfWork.ts
           src/storage/postgres/sessionStore.ts
@@ -81,6 +82,13 @@ jobs:
           src/storage/postgres/roleStore.ts
           src/storage/postgres/assignmentStore.ts
           docs/POSTGRES.md
+          docs/JWKS.md
+          src/storage/postgres/keyStore.ts
+          src/storage/file/keyStore.ts
+          src/storage/memory/keyStore.ts
+          src/auth/jwt/keySealing.ts
+          src/auth/jwt/persistentKeyProvider.ts
+          src/auth/jwt/jwks.ts
           FILES
           exit "$missing"
 

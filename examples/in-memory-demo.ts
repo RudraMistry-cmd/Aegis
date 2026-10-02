@@ -1,9 +1,12 @@
-// Runnable demo: wires the in-memory adapter and walks login -> authorize -> refresh -> revoke.
-// Implements nothing itself; it exercises the Phase 1 public API (src/index.ts).
+// Runnable demo: wires the in-memory adapter with RS256 JWT access tokens and walks
+// login -> authorize -> refresh -> key rotation -> revoke.
+// Implements nothing itself; it exercises the public API (src/index.ts).
 //
 // Run with: npm run start-demo
+import { generateKeyPairSync } from 'node:crypto';
 import {
   createAuth,
+  createJwtAccessTokens,
   createMemoryStorage,
   CryptoRandom,
   defineCatalog,
@@ -14,7 +17,6 @@ import {
   MemoryRateLimiter,
   ScryptHasher,
   SequentialIdGenerator,
-  StubAccessTokenProvider,
   SYSTEM_ACTOR,
 } from '../src/index.js';
 
@@ -55,15 +57,24 @@ async function main(): Promise<void> {
   const ids = new SequentialIdGenerator('demo');
   const audit = new MemoryAuditSink();
   const storage = createMemoryStorage(new SequentialIdGenerator('row'));
+  // RS256 access tokens. In production the private keys come from a secret manager.
+  const rsaKey = () => generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey;
+  const { accessTokens, keys } = createJwtAccessTokens(
+    {
+      tokens: {
+        algorithm: 'RS256',
+        issuer: 'aegis-demo',
+        audience: 'aegis-demo-api',
+        ttl: 10 * 60_000,
+      },
+      keys: { rotationEnabled: true },
+    },
+    { keys: [{ kid: 'demo-key-2030-01', privateKey: rsaKey() }], clock, ids },
+  );
   const auth = createAuth({
     storage,
     hasher: new ScryptHasher({ N: 1 << 12 }),
-    accessTokens: new StubAccessTokenProvider({
-      secret: 'demo-secret-of-at-least-thirty-two-bytes',
-      issuer: 'aegis-demo',
-      audience: 'aegis-demo-api',
-      ids,
-    }),
+    accessTokens,
     clock,
     random: new CryptoRandom(),
     ids,
@@ -141,7 +152,34 @@ async function main(): Promise<void> {
   );
 
   // ---------------------------------------------------------------- revocation
-  heading('6. Revocation');
+  heading('6. Key rotation');
+  const kidOf = (jwt: string): string =>
+    (
+      JSON.parse(Buffer.from(jwt.split('.')[0] as string, 'base64url').toString('utf8')) as {
+        kid: string;
+      }
+    ).kid;
+  const beforeRotation = await auth.authn.login({
+    identifier: 'ada@example.com',
+    password: 'a-long-enough-password',
+  });
+  line('signed with', kidOf(beforeRotation.credentials.accessToken));
+  keys.rotate({ kid: 'demo-key-2030-02', privateKey: rsaKey() });
+  line(
+    'keys',
+    keys.list().map((k) => `${k.kid}:${k.status}`),
+  );
+  line(
+    'old token still verifies',
+    (await auth.authn.resolve(beforeRotation.credentials.accessToken)) !== null,
+  );
+  const afterRotation = await auth.authn.refresh({
+    refreshToken: beforeRotation.credentials.refreshToken,
+  });
+  line('new tokens signed with', kidOf(afterRotation.credentials.accessToken));
+  await auth.authn.logout({ principal: afterRotation.principal });
+
+  heading('7. Revocation');
   // The replay above already revoked the family; log in again to show an explicit logout.
   const second = await auth.authn.login({
     identifier: 'ada@example.com',
@@ -156,6 +194,11 @@ async function main(): Promise<void> {
     'resolved after logout',
     (await auth.authn.resolve(second.credentials.accessToken)) !== null,
   );
+  // A JWT is a transport, not an authority: valid signature, unexpired, but the session is revoked.
+  line(
+    'authenticate after logout',
+    await expectFailure(() => auth.authn.authenticate(second.credentials.accessToken)),
+  );
   line(
     'refresh after logout',
     await expectFailure(() =>
@@ -163,7 +206,7 @@ async function main(): Promise<void> {
     ),
   );
 
-  heading('7. Audit trail');
+  heading('8. Audit trail');
   for (const event of audit.events()) {
     line(event.type, {
       outcome: event.outcome,

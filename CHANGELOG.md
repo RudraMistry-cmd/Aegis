@@ -4,6 +4,71 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning, where
 the major version also tracks the major version of the specification in `spec/`.
 
+## [0.4.0] — 2026-10-02
+
+Phase 3.5: durable signing keys and a JWKS endpoint, so tokens stay verifiable across restarts and
+instances. Verification semantics are unchanged: signature first, then the session store.
+
+### Added
+
+- **`KeyStore` port** with PostgreSQL (`storage.keys`), single-process file (`FileKeyStore`) and
+  in-memory (`InMemoryKeyStore`) adapters, sharing one contract test suite. Lifecycle pending →
+  active → retired; at most one active key; kids registered forever.
+- **`migrations/003_create_keys_table.sql`**: `signing_key_registry`, `signing_keys`; the schema
+  itself enforces one active key, sealed-only private material, public-only public material and a
+  one-way lifecycle.
+- **Encryption at rest** (`src/auth/jwt/keySealing.ts`): AES-256-GCM under the master key from
+  `AEGIS_MASTER_KEY` (configurable name), bound to the kid. Required for PostgreSQL; file/memory
+  without it log an explicit "unencrypted" warning.
+- **`openJwtAccessTokens` / `PersistentKeyProvider`**: loads the keyring at startup
+  (`keys.generateIfMissing` for an empty store), reloads it every `keys.refreshIntervalMs` and on an
+  unseen kid; `stage`, `activate`, `rotate`, `retire`, `remove`, `prune`. Fails startup with
+  `CONFIG_INVALID` when there is no usable active key.
+- **JWKS** (`src/auth/jwt/jwks.ts`): `createJwksHandler` serves `/.well-known/jwks.json` (configurable)
+  with `kty kid alg use n e` only, `Cache-Control: max-age=keys.jwks.cacheTtlSec`. Publishes active,
+  pending and in-window retired RSA keys; HS256 is refused.
+- **Docs**: `docs/JWKS.md` (wiring, verifier caching, multi-instance rollout, compromise, secret
+  managers and HSMs); `docs/POSTGRES.md` §13 (key schema and lock domain).
+- Tests: 28 key-store, 18 persistent-provider, 7 JWKS unit tests; 23 PostgreSQL key tests.
+
+### Changed
+
+- `KeyProvider` gained `verificationKeys(now)`; `keyProvider.ts` exports `importKey` and
+  `canVerifyAt` (behaviour-preserving refactor; the 32 Phase 3 tests are unchanged).
+
+## [0.3.0] — 2026-10-02
+
+Phase 3: real JWT access tokens with key rotation. The JWT is a transport; the session remains the
+single source of truth.
+
+### Added
+
+- **`JwtAccessTokenProvider`** (`src/auth/jwt/jwtProvider.ts`): RS256 or HS256 via `node:crypto` (no
+  new dependency); `kid` in the header; claims `iss aud sub sid iat exp jti sv typ` and nothing
+  else. Verification never throws, checks the signature before any claim, rejects `alg: none`,
+  algorithm confusion, key-selecting headers (`jku`, `jwk`, `x5u`, `crit`, …), duplicate claims and
+  non-canonical base64url.
+- **`InMemoryKeyProvider`** (`src/auth/jwt/keyProvider.ts`): `getActiveKey`, `getKeyById`, and
+  rotation (`rotate`, or two-phase `stage` → `activate`), `remove` for compromised keys, `prune`.
+  Retired keys verify for exactly ttl + leeway and only for tokens issued before retirement.
+- **`authn.authenticate`**: like `resolve`, but raises `UNAUTHENTICATED`, `TOKEN_EXPIRED` or
+  `TOKEN_INVALID` instead of returning null.
+- **Configuration**: `tokens.{algorithm, issuer, audience, ttl, leewayMs}` and
+  `keys.rotationEnabled`, validated at construction; `createAuth` rejects a core access TTL that
+  differs from the provider's.
+- 32 tests in `test/unit/jwt.test.ts`, plus a deterministic regression test for the race below.
+
+### Changed
+
+- The stub access-token provider is removed. Test fixtures, the PostgreSQL harness and the demo use
+  the JWT provider, so every existing suite now runs on real JWTs.
+
+### Fixed
+
+- **PostgreSQL: a login could create an active session for an account suspended mid-login**
+  (INV-STATE-01). Inside a unit of work, `users.getById` now takes the user row lock, so the state a
+  login decides on cannot change before its session is created.
+
 ## [0.2.0] — 2026-10-02
 
 Phase 2: a PostgreSQL storage adapter that keeps every invariant under real concurrency.
