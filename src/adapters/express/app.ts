@@ -4,6 +4,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { Auth } from '../../auth/index.js';
 import type { JwksHandler } from '../../auth/jwt/jwks.js';
 import { authError } from '../../errors/index.js';
+import { metricsHandler, type AegisMetrics } from '../../observability/metrics.js';
 import { sendError } from './errors.js';
 import type { AuthenticateOptions } from './middleware.js';
 import { createAuthRoutes } from './routes.js';
@@ -15,6 +16,11 @@ export interface AegisExpressInput {
   readonly authentication?: AuthenticateOptions;
   /** Maximum JSON body size. Default '16kb'. */
   readonly bodyLimit?: string;
+  /**
+   * Serves these counters at GET /metrics. Absent → no route. Expose /metrics only on an internal
+   * network (or serve it on a separate port, as examples/staging/server.ts does).
+   */
+  readonly metrics?: AegisMetrics;
 }
 
 /** Serves `jwks.handle()` as is: its body, status and headers (including Cache-Control). */
@@ -34,6 +40,7 @@ export function createExpressApp(aegis: AegisExpressInput): Express {
   app.disable('x-powered-by');
   app.use(express.json({ limit: aegis.bodyLimit ?? '16kb' }));
 
+  if (aegis.metrics) app.get('/metrics', metricsHandler(aegis.metrics));
   if (aegis.jwks) app.get(aegis.jwks.path, jwksRoute(aegis.jwks));
   app.use(createAuthRoutes(aegis.auth, aegis.authentication));
 
