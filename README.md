@@ -65,6 +65,20 @@ keyring, so tokens verify across restarts and instances; rotation is stage → a
 publishes public RSA keys only. Startup fails with `CONFIG_INVALID` rather than run without a usable
 active key. See [`docs/JWKS.md`](docs/JWKS.md) for caching, rollout and compromise handling.
 
+## Express
+
+```ts
+import { authenticate, authorize, createExpressApp } from 'aegis-core/express';
+
+app.get('/posts', authenticate(auth), authorize(auth, 'post:read'), handler); // req.principal is set
+const demo = createExpressApp({ auth, jwks }); // POST /login /refresh /logout, GET /me, JWKS
+```
+
+A transport layer only: `authenticate()` passes the Bearer token (or an opt-in cookie) to
+`auth.authn.authenticate`, so every request is checked against the session store; nothing is decoded or
+cached in the adapter. Errors become fixed JSON bodies (401/403/404/409/400/429/500/503) without
+internal causes. Express 5 is an optional peer dependency, loaded only from `aegis-core/express`.
+
 ## Using it
 
 ```ts
@@ -170,6 +184,7 @@ src/auth/          login, refresh, revoke, request resolution, session and token
 src/storage/memory in-memory reference adapter with simulated atomicity
 src/storage/postgres PostgreSQL adapter: stores, transaction runner, locks, error mapping, audit sink, key store
 src/storage/file   single-process JSON key store (development)
+src/adapters/express Express middleware, error mapping, demo routes, app factory
 src/auth/jwt/      JWT provider, key providers (static and persistent), key sealing, JWKS
 migrations/        SQL schema: 001 tables, constraints and integrity triggers; 002 indexes; 003 signing keys
 test/              unit and conformance suites; test/postgres/ for the PostgreSQL adapter

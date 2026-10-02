@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning, where
 the major version also tracks the major version of the specification in `spec/`.
 
+## [Unreleased]
+
+Phase 5: Express adapter (`aegis-core/express`), a transport layer only.
+
+### Added
+
+- `authenticate(auth, { cookieName? })`: Bearer header (RFC 6750) or opt-in cookie →
+  `auth.authn.authenticate` → `req.principal`. A malformed Authorization header is `TOKEN_INVALID`,
+  never a fallback to the cookie. No token decoding, no caching.
+- `authorize(auth, "resource:action", { resource? })` → `auth.authz.authorize`; deny → 403, no
+  principal → 401.
+- Error mapping (`HTTP_STATUS`, `errorResponse`, `sendError`): fixed messages, no causes, no details
+  on 5xx, `WWW-Authenticate` on 401, `Retry-After` on 429/503, `Cache-Control: no-store`.
+- Demo routes (`POST /login`, `/refresh`, `/logout`, `GET /me`), `createExpressApp`, and the JWKS route.
+- 21 tests in `test/express/adapter.test.ts` over a real HTTP server.
+- `express` ^5 as an optional peer dependency.
+
 ## [0.4.0] — 2026-10-02
 
 Phase 3.5: durable signing keys and a JWKS endpoint, so tokens stay verifiable across restarts and
