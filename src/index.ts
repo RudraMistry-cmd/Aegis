@@ -12,3 +12,4 @@ export * from './auth/index.js';
 export { createMemoryStorage, type MemoryStorage } from './storage/memory/index.js';
 export { InMemoryKeyStore } from './storage/memory/keyStore.js';
 export { FileKeyStore } from './storage/file/keyStore.js';
+export * from './observability/metrics.js';
