@@ -1,10 +1,12 @@
-# Conformance report — Phase 1
+# Conformance report — Phases 1 and 2
 
 This document maps the implemented tests to the case ids of [`spec/conformance.md`](../spec/conformance.md),
-and records every place where the Phase 1 reference implementation deliberately deviates from the
-specification or cannot verify a case in memory.
+and records every place where the implementation deliberately deviates from the specification or
+cannot verify a case.
 
-Run them with `npm test` (121 tests: 60 unit, 61 conformance-labelled).
+- **Phase 1** (in-memory reference): `npm test` — 121 tests (60 unit, 61 conformance-labelled).
+- **Phase 2** (PostgreSQL adapter): `npm run test:pg` — 103 tests against a real PostgreSQL 17,
+  listed in §6. Design and guarantees: [POSTGRES.md](POSTGRES.md).
 
 ## 1. Claimed profiles
 
@@ -14,7 +16,7 @@ Run them with `npm test` (121 tests: 60 unit, 61 conformance-labelled).
 | **P-AUTHN** | partial | Login, refresh, revoke and request resolution are implemented. Email verification, password reset and change-password are not (D-3). |
 | **P-TRANSPORT-TOKEN** | partial | A MAC-protected stub access token plus opaque rotating refresh tokens. The JWT profile and key rotation are not implemented (D-1). |
 | **P-TRANSPORT-SESSION** | not claimed | Only the token transport exists in Phase 1. |
-| **P-STORE-FULL** | single-process only | The in-memory adapter provides A1 and A2 within one process (D-6). |
+| **P-STORE-FULL** | **claimed (PostgreSQL)** | The PostgreSQL adapter provides A1/A2 across processes and passes the storage-contract and race cases of §6. Default isolation is READ COMMITTED with ordered row locks (D-10); SERIALIZABLE is supported. The in-memory adapter provides A1/A2 within one process only. |
 
 Optional features: `hierarchy`, `deny`, `wildcards`, `multiRole` and `reuseGrace` are implemented.
 `directGrants`, `dynamicRoles` and assignment `scope` are **inert** — configuring them is rejected,
@@ -149,10 +151,26 @@ Phase 1 requires the reserved permission and does not add a new one.
 Phase 1 reads the store on every resolution. This is stricter than the spec (zero staleness), so
 `MID-03`'s multi-instance staleness bound is not applicable and is not claimed.
 
-**D-9 — Housekeeping deletions are unimplemented.** `deleteTerminalBefore` /
-`deleteExpiredBefore` (`spec/storage/interfaces.md` §5, §6, §7) are marked `TODO`. Expiry is always
-derived from timestamps at read time, so no behaviour depends on them; `SESS-06` and `STO-RT-07`
-are not claimed.
+**D-9 — Housekeeping deletions are not port methods.** `deleteTerminalBefore` /
+`deleteExpiredBefore` (`spec/storage/interfaces.md` §5, §6, §7) remain `TODO` on the ports. The
+PostgreSQL adapter offers `storage.housekeep(cutoff)` as an adapter-level operation (tested). Expiry
+is always derived from timestamps at read time, so no behaviour depends on deletion.
+
+**D-10 — PostgreSQL default isolation is READ COMMITTED with explicit locks, not SERIALIZABLE.**
+`spec/storage/interfaces.md` §11.3 says SERIALIZABLE isolation MUST be used for the session-limit,
+last-superuser, escalation, password and account-state flows. The default adapter provides
+serializable *outcomes* for each of them through row locks taken in one global order (per-user row
+lock, token row lock, per-role advisory lock); POSTGRES.md §1 lists each anomaly and its guard. The
+reason is liveness, measured: under SERIALIZABLE, 40 simultaneous logins for one user need hundreds of
+retries and, with the default budget of 10 attempts, some fail with `STORAGE_UNAVAILABLE` (fail
+closed, but a refused user). READ COMMITTED needed zero retries in every run. The SERIALIZABLE mode
+(`isolation: "serializable"`) is fully supported and passes the same suite with a larger retry
+budget. **Recommendation:** amend §11.3 to require serializable outcomes demonstrated by the race
+suite, rather than one isolation level.
+
+**D-2 status.** The project has resolved the revocation conflict in favour of strict semantics. The
+PostgreSQL adapter honours it: `resolve` reads the session and `securityVersion` from the primary on
+every request, with no cache, so a revocation is visible to the next request.
 
 ## 4. Atomicity: what the in-memory adapter can and cannot prove
 
@@ -186,3 +204,65 @@ suite:
 2. **The in-memory `UnitOfWork` detected nesting with an instance counter.** Any transaction started
    while another was in flight joined it, so a rollback in one discarded the other's committed
    writes — `RACE-03` caught a revocation being undone. It now uses `AsyncLocalStorage`.
+
+## 6. Phase 2 — PostgreSQL adapter cases
+
+All run by `npm run test:pg` against a real server, each file on its own fresh database.
+
+### Storage contract, on both adapters — `test/postgres/contract.pg-test.ts` (25 × 2)
+
+Each case runs against the in-memory adapter **and** PostgreSQL; a behavioural difference is a bug in
+one of them: `STO-USR-01`, `STO-USR-02`, `STO-USR-04`, `STO-DATA-03`, `STO-ID-01/03`,
+`STO-CRED-01`, `STO-SES-01`, `STO-SES-01b` (reject, duplicate id), `STO-SES-01c` (expired sessions
+do not count), `STO-SES-02`, `STO-SES-03`, `STO-SES-04` (including no resurrection of an expired
+session), `STO-SES-07`, `STO-RT-02`, `STO-RT-03`, `STO-RT-04`, `STO-RT-05`, `STO-RT-06`,
+duplicate digest, `STO-ASG-01`, `STO-ASG-02`, `STO-ASG-03`, `STO-CAT-01`, `STO-UOW-01`,
+`STO-UOW-03`.
+
+### Concurrency, under READ COMMITTED and SERIALIZABLE — `test/postgres/concurrency.pg-test.ts` (13 × 2)
+
+| Case | Concurrency | Invariant checked on committed state |
+|---|---|---|
+| `STO-RT-01` consume | 50 × one token | exactly 1 `consumed`, 49 `reused` |
+| `REF-03` / `RACE-02` | 25 refreshes × one token | exactly 1 success; family revoked; 0 active tokens |
+| `RACE-06` / `STO-SES-01` | 40 logins, limit 3, evict | exactly 3 active |
+| `RACE-06b` | 30 logins, limit 3, reject | exactly 3 created, 27 `limit_reached` |
+| `RACE-06c` | 20 full logins | no active token belongs to a revoked session |
+| `RACE-03` / `STO-RT-05` | refresh ∥ logout, 40 rounds | session revoked; 0 active tokens; refresh only `OK` or `TOKEN_INVALID`; a winning refresh's token is already dead |
+| `RACE-07` | 12 logins ∥ suspension | 0 active sessions, 0 active tokens |
+| `RACE-01` | 20 registrations, one email | exactly 1 identifier |
+| `ESC-09` race | remove both superusers at once | exactly 1 removal succeeds, 1 `ESCALATION_DENIED` |
+| `RACE-08` / `ESC-06` | assign ∥ assigner losing authority | no escalated role |
+| `STO-ASG-01` race | 30 identical assigns | 1 `created`, 29 `unchanged` |
+| `RACE-09` / `STO-USR-03` | 100 `bumpSecurityVersion` | exactly +100 |
+| `STO-USR-02` race | 20 `setStatus`, one version | exactly 1 applies |
+
+Stable over repeated runs; READ COMMITTED needed 0 retries in every run, SERIALIZABLE 388–473.
+
+### Transactions and integrity — `test/postgres/transactions.pg-test.ts` (16)
+
+Rollback of every write; refusal to commit a unit that swallowed a database error (reporting the
+first cause); retry of a serialization abort with `fn` re-executed; ambient routing without
+self-deadlock; rejection of a query after its unit finished; error mapping with driver text stripped
+(`ERR-02`); unreachable server gives `STORAGE_UNAVAILABLE`; bounded lock wait; schema refusals for
+session resurrection (`INV-SESS-02`), immutable session fields (`INV-SESS-04`), token reactivation
+and family forks (`INV-TOK-02`), and audit modification (`INV-AUD-02`); contained audit failures;
+idempotent migrations; housekeeping; id non-reuse (`INV-ID-01`, which the in-memory adapter does not
+provide).
+
+### End-to-end flows — `test/postgres/flows.pg-test.ts` (11)
+
+`AUTH-01`, `AUTH-ENUM-01`, `REF-01`, `REF-04/05`, `REV-04/05`, `SESS-07`, logout-all,
+`MID-01/02`, `ESC-03/09`, `TIME-01` (exact to the millisecond) and `INV-CRED-01`, through
+`createAuth`, with audit events persisted to PostgreSQL.
+
+### Bugs Phase 2 found
+
+1. **`AssignmentService` emitted audit events inside its unit of work** (§11.4). Harmless in memory,
+   which never retries; on a real database a retried or rolled-back unit would duplicate or orphan
+   the event. Now emitted after commit.
+2. **The in-memory `touch` could extend an idle-expired session** (§5.5, INV-SESS-02). Found while
+   writing the PostgreSQL query; fixed, and covered by the shared contract test.
+3. **The PostgreSQL runner relabeled errors thrown by `fn` as `STORAGE_UNAVAILABLE`**, and reported
+   the last `25P02` instead of the first real failure. Both caught by the transaction tests before
+   release; the contract test now pins that a unit's own error propagates unchanged on both adapters.

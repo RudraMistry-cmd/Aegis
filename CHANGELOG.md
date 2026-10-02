@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning, where
 the major version also tracks the major version of the specification in `spec/`.
 
+## [0.2.0] — 2026-10-02
+
+Phase 2: a PostgreSQL storage adapter that keeps every invariant under real concurrency.
+
+### Added
+
+- **PostgreSQL adapter** (`src/storage/postgres/`, published as `aegis-core/postgres`) implementing
+  every storage port: users, identifiers, credentials, sessions, refresh tokens, assignments and the
+  role-catalog mirror, plus a non-blocking append-only audit sink.
+- **Transaction runner**: a real `UnitOfWork` with nested-join semantics, ambient-transaction
+  routing (store calls made inside a unit always run in it), refusal to commit a unit that swallowed a
+  database error, and bounded jittered retry on `40001`/`40P01` only.
+- **Concurrency design**: READ COMMITTED by default with row locks in one global order (per-user row
+  lock, then sessions, then tokens) and per-role advisory locks for last-superuser accounting;
+  SERIALIZABLE available as an option. Measured trade-offs in `docs/POSTGRES.md`.
+- **Schema** (`migrations/001_init.sql`, `002_indexes.sql`): constraints and triggers that make the
+  database itself refuse to resurrect a revoked session, reactivate or fork a refresh-token family,
+  change immutable session fields, reuse a deleted user id, or modify an audit event. Idempotent
+  migration runner with an advisory lock.
+- **Tests** (`test/postgres/`, `npm run test:pg`): 103 cases against a real PostgreSQL 17 — the
+  storage contract on both adapters, 13 race scenarios under both isolation levels, transaction and
+  integrity cases, and end-to-end flows. CI runs them against a `postgres:17` service container.
+- `docs/POSTGRES.md`: the consume race, session-limit enforcement, revocation visibility, isolation
+  choice, lock order, per-operation SQL and error mapping.
+
+### Fixed
+
+- `AssignmentService` emitted audit events inside its unit of work (spec §11.4); a retried or
+  rolled-back transaction could duplicate or orphan them. They are now emitted after commit.
+- The in-memory `touch` could extend an idle-expired session (spec §5.5, INV-SESS-02).
+
+### Documented
+
+- Deviation D-10: the default isolation provides serializable outcomes by locking rather than the
+  SERIALIZABLE level that spec §11.3 names, for measured liveness reasons; SERIALIZABLE is supported.
+
 ## [0.1.0] — 2026-10-02
 
 First release: the Phase 1 reference implementation of the Aegis core domain. Pure TypeScript with

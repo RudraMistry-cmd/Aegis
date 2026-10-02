@@ -1,7 +1,7 @@
 {
   "name": "aegis-core",
-  "version": "0.1.0",
-  "description": "Aegis Phase 1: in-memory reference implementation of the core authentication and authorization domain.",
+  "version": "0.2.0",
+  "description": "Aegis: core authentication and authorization domain, with in-memory and PostgreSQL storage adapters.",
   "license": "MIT",
   "type": "module",
   "main": "dist/src/index.js",
@@ -12,6 +12,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "test:pg": "npm run build && node scripts/test-postgres.mjs",
+    "test:all": "npm test && node scripts/test-postgres.mjs",
     "lint": "eslint . && prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\"",
     "start-demo": "npm run build && node dist/examples/in-memory-demo.js"
@@ -24,9 +26,37 @@
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@types/node": "^22.20.4",
+    "@types/pg": "^8.23.1",
+    "embedded-postgres": "17.10.0-beta.17",
     "eslint": "^9.39.5",
+    "pg": "^8.23.1",
     "prettier": "^3.9.9",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./postgres": {
+      "types": "./dist/src/storage/postgres/index.d.ts",
+      "default": "./dist/src/storage/postgres/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "migrations",
+    "spec",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "pg": "^8.11.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
   }
 }

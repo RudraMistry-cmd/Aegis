@@ -16,16 +16,37 @@ permissions, policies add contextual constraints, and every decision is deny-by-
 npm install
 npm run build
 npm test
+npm run test:pg
 npm run start-demo
 ```
 
 - `npm run build` — type-checks and compiles `src/`, `test/` and `examples/` to `dist/`.
 - `npm test` — builds, then runs the unit and conformance suites with the Node test runner.
+- `npm run test:pg` — runs the PostgreSQL adapter suite against a real PostgreSQL 17. It starts a
+  throwaway server itself (prebuilt binaries via `embedded-postgres`, no Docker), or uses
+  `AEGIS_PG_URL` when set. `npm run test:all` runs both suites.
 - `npm run lint` — ESLint plus a Prettier format check.
 - `npm run start-demo` — runs [`examples/in-memory-demo.ts`](examples/in-memory-demo.ts): register,
   login, authorize, refresh with rotation, replay detection, logout, and the resulting audit trail.
 
-Node 22 or newer is required. There are no runtime dependencies and no native builds.
+Node 22 or newer is required. The core has no runtime dependencies and no native builds; the
+PostgreSQL adapter needs only the pure-JavaScript `pg` driver (an optional peer dependency).
+
+## PostgreSQL
+
+```ts
+import { createPostgresStorage, PostgresAuditSink } from 'aegis-core/postgres';
+
+const storage = createPostgresStorage({ connectionString: process.env.DATABASE_URL! });
+await storage.migrate(); // applies migrations/*.sql once each; safe on every start
+const auth = createAuth({ storage, audit: new PostgresAuditSink(storage.client), /* … */ });
+```
+
+The adapter keeps every invariant under real concurrency: a refresh token is consumed exactly once,
+the session limit holds under parallel logins, and a revoked session is invalid on the very next
+request. [`docs/POSTGRES.md`](docs/POSTGRES.md) explains how — lock order, isolation choice (with
+measurements), the SQL for each operation, and error mapping. Point `connectionString` at the
+primary, not a read replica.
 
 ## Using it
 
@@ -102,6 +123,9 @@ Every source file names the specification section it implements in its first com
   (for example `REF-04`, `AZ-DENY-01`, `RACE-06`) and the GIVEN / WHEN / THEN of the spec.
   [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) lists them and records where this implementation
   deliberately deviates or cannot verify a case in memory.
+- `test/postgres/` — 103 cases on a real PostgreSQL: the storage contract run against **both**
+  adapters, 13 race scenarios under two isolation levels, transaction and integrity cases, and the
+  storage-dependent conformance flows end to end.
 
 ## Layout
 
@@ -114,19 +138,22 @@ src/rbac/          catalog, role and permission resolution, assignment service w
 src/policy/        policy definitions, the decision engine, and the list-scope constraint language
 src/auth/          login, refresh, revoke, request resolution, session and token issuance
 src/storage/memory in-memory reference adapter with simulated atomicity
-test/              unit and conformance suites
+src/storage/postgres PostgreSQL adapter: stores, transaction runner, locks, error mapping, audit sink
+migrations/        SQL schema: 001 tables, constraints and integrity triggers; 002 indexes
+test/              unit and conformance suites; test/postgres/ for the PostgreSQL adapter
 examples/          runnable in-memory demo
 ```
 
-Dependencies point inward: `src/policy` and `src/rbac` never import `src/auth`, and nothing in
-`src/` imports a framework or driver.
+Dependencies point inward: `src/policy` and `src/rbac` never import `src/auth`, and only
+`src/storage/postgres` imports a database driver. The package root does not import it, so core
+users never load `pg`.
 
 ## Status and scope
 
-Phase 1 implements the core domain only. Not implemented, by design: database adapters, HTTP or
-framework integration, a real JWT provider and key rotation, a caching layer, email delivery and
-the verification/password-reset flows that need it, MFA, OAuth/OIDC, passkeys, API keys, and
-multi-tenant scoped assignments. Each gap is marked with a `TODO` naming the spec section, and
+Phase 1 implemented the core domain; Phase 2 adds the PostgreSQL storage adapter. Not implemented,
+by design: other databases, HTTP or framework integration, a real JWT provider and key rotation, a
+caching layer, email delivery and the verification/password-reset flows that need it, MFA,
+OAuth/OIDC, passkeys, API keys, and multi-tenant scoped assignments. Each gap is marked with a `TODO` naming the spec section, and
 `docs/CONFORMANCE.md` lists them in one place.
 
 License: [MIT](LICENSE).

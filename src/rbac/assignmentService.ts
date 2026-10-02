@@ -112,7 +112,9 @@ export class AssignmentService {
       }
     }
 
-    return this.o.uow.run(async (tx) => {
+    // spec/storage/interfaces.md §11.4: the unit contains storage work only. The audit event is
+    // emitted after commit, so a rolled-back or retried transaction never produces one.
+    const outcome = await this.o.uow.run(async (tx) => {
       if (!systemActor && this.guards.grantCeiling) {
         await this.assertGrantCeiling(actor, input.roleName, now);
       }
@@ -133,12 +135,12 @@ export class AssignmentService {
         grantedBy: actor.id,
         grantedAt: now,
       };
-      const outcome = await tx.assignments.assign(record, now);
-      if (outcome !== 'unchanged') {
-        await this.emit('role.assigned', now, actor, targetSubjectId, input.roleName, 'success');
-      }
-      return outcome;
+      return tx.assignments.assign(record, now);
     });
+    if (outcome !== 'unchanged') {
+      await this.emit('role.assigned', now, actor, targetSubjectId, input.roleName, 'success');
+    }
+    return outcome;
   }
 
   /** Removes an assignment. Idempotent (assignments.md §1.3). */
@@ -153,7 +155,8 @@ export class AssignmentService {
     if (!systemActor) {
       await this.o.authorizer.assert(actor, 'revoke', { type: 'role', id: roleName });
     }
-    return this.o.uow.run(async (tx) => {
+    // §11.4: audit emission happens after commit (see assign).
+    const removed = await this.o.uow.run(async (tx) => {
       // §6.5: last-superuser protection, inside the unit so the count cannot change under us.
       if (this.guards.lastSuperuser && this.o.rbac.catalog.role(roleName)?.superuser === true) {
         const holders = await this.countSuperuserHolders(now);
@@ -165,12 +168,12 @@ export class AssignmentService {
           throw authError('ESCALATION_DENIED', { details: { rule: 'last_superuser' } });
         }
       }
-      const removed = await tx.assignments.unassign(targetSubjectId, roleName, null);
-      if (removed) {
-        await this.emit('role.revoked', now, actor, targetSubjectId, roleName, 'success');
-      }
-      return removed;
+      return tx.assignments.unassign(targetSubjectId, roleName, null);
     });
+    if (removed) {
+      await this.emit('role.revoked', now, actor, targetSubjectId, roleName, 'success');
+    }
+    return removed;
   }
 
   /** Lists a subject's active assignments. Self-introspection needs no permission (§8.1). */

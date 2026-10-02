@@ -118,7 +118,8 @@ export class MemorySessionStore implements SessionStore {
   async touch(id: Id, now: Timestamp, newIdleExpiresAt: Timestamp): Promise<boolean> {
     const t = this.db.tables;
     const s = t.sessions.get(id);
-    if (!s || s.revokedAt !== undefined) return false;
+    // §5.5 / INV-SESS-02: an expired session is terminal too, so a touch must not extend it.
+    if (!s || sessionStatus(s, now) !== 'active') return false;
     if (newIdleExpiresAt < s.idleExpiresAt || newIdleExpiresAt > s.absoluteExpiresAt) return false;
     t.sessions.set(id, { ...s, idleExpiresAt: newIdleExpiresAt, lastSeenAt: now });
     return true;
