@@ -1,6 +1,6 @@
 {
   "name": "aegis-core",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Aegis: core authentication and authorization domain, with in-memory and PostgreSQL storage adapters and an Express adapter.",
   "license": "MIT",
   "type": "module",
