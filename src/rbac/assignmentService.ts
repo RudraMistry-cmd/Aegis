@@ -51,8 +51,8 @@ export interface AssignInput {
   readonly expiresAt?: Timestamp | null;
   /**
    * Tenant of the target subject, when the deployment tracks tenants (assignments.md §6.6).
-   * TODO(spec/rbac/assignments.md §3): Phase 1 has no tenant column on User, so the caller supplies
-   * this value; it is used only to enforce the actor's own tenant boundary.
+   * Out of scope for Phase 1 (spec/rbac/assignments.md §3): a tenant column on User. The caller
+   * supplies this value; it is used only to enforce the actor's own tenant boundary.
    */
   readonly targetTenantId?: Id;
 }

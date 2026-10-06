@@ -68,7 +68,7 @@ export function normalizeIdentifier(type: string, raw: unknown): NormalizeResult
       ? { ok: true, normalized: n }
       : { ok: false, reason: 'username_shape' };
   }
-  // TODO(spec/auth/principal.md §4): extension identifier types are not defined in Phase 1.
+  // Out of scope for Phase 1 (spec/auth/principal.md §4): extension identifier types.
   return { ok: false, reason: 'unsupported_type' };
 }
 

@@ -1,7 +1,36 @@
+# Dependencies and build output
 node_modules/
 dist/
-*.log
-.DS_Store
 coverage/
+.nyc_output/
+*.tsbuildinfo
+test-logs/
+
+# Secrets and key material: never commit these
 .env
 .env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+aegis-keys*.json
+keys.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local tooling
+.claude/

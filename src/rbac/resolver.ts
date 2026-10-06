@@ -65,7 +65,7 @@ export class Rbac {
   /**
    * assignments.md §3.2: this implementation does not support scoped assignments, so a non-global
    * scope never applies. (`assign` rejects such scopes with VALIDATION_FAILED.)
-   * TODO(spec/rbac/assignments.md §3.3): scope contexts are out of Phase 1 scope.
+   * Out of scope for Phase 1 (spec/rbac/assignments.md §3.3): scope contexts.
    */
   private isApplicable(scope: { type: string; id: Id } | null | undefined): boolean {
     return scope === undefined || scope === null;

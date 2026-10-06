@@ -201,7 +201,8 @@ export class LoginService {
       }
     }
 
-    // TODO(spec/flows/login.md §3.2 step 8): additional factors (MfaChallenge) are out of Phase 1 scope.
+    // Out of scope for Phase 1 (spec/flows/login.md §3.2 step 8): additional factors / MFA
+    // challenges. See README, "Not included".
 
     // ---- Steps 9-10: create the session and issue credentials
     const { session, credentials } = await createSessionWithCredentials(this.ctx, {
@@ -320,8 +321,8 @@ export class LoginService {
       throw toInfraError(e);
     }
 
-    // TODO(spec/flows/login.md §6.1.6): email verification tokens require the Notifier port,
-    // which is out of Phase 1 scope.
+    // Out of scope for Phase 1 (spec/flows/login.md §6.1.6): e-mail verification tokens need a
+    // Notifier port. See README, "Not included".
     await emitAudit(
       this.ctx,
       {

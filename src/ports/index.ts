@@ -221,7 +221,8 @@ export interface SessionStore {
   /** True iff applied. Never shrinks idle expiry, never exceeds absolute expiry, never touches revoked. */
   touch(id: Id, now: Timestamp, newIdleExpiresAt: Timestamp): Promise<boolean>;
   countActive(userId: Id, now: Timestamp): Promise<number>;
-  // TODO(spec/storage/interfaces.md §5.7): deleteTerminalBefore (housekeeping) is not implemented in Phase 1.
+  // Out of scope for Phase 1 (spec/storage/interfaces.md §5.7): deleteTerminalBefore, the cleanup of
+  // ended sessions. The expiry of every row is still checked at read time, so nothing depends on it.
 }
 
 /** §6 RefreshTokenStore. */
@@ -237,7 +238,8 @@ export interface RefreshTokenStore {
   ): Promise<'replaced' | 'not_active'>;
   revokeFamily(sessionId: Id, reason: RefreshRevokedReason): Promise<number>;
   getById(id: Id): Promise<RefreshTokenRecord | null>;
-  // TODO(spec/storage/interfaces.md §6.8): deleteTerminalBefore (housekeeping) is not implemented in Phase 1.
+  // Out of scope for Phase 1 (spec/storage/interfaces.md §6.8): deleteTerminalBefore, the cleanup of
+  // spent tokens. Token expiry is still checked at read time.
 }
 
 /** §8.2 AssignmentStore. */
@@ -256,7 +258,7 @@ export interface RoleCatalogStore {
     now: Timestamp,
   ): Promise<void>;
   getCatalogVersion(): Promise<string | null>;
-  // TODO(spec/storage/interfaces.md §8.1): dynamic role methods are out of Phase 1 scope.
+  // Out of scope for Phase 1 (spec/storage/interfaces.md §8.1): dynamic (runtime-defined) roles.
 }
 
 // ---------------------------------------------------------------- signing-key store (tokens.md §6)

@@ -1,8 +1,30 @@
 {
   "name": "aegis-core",
-  "version": "0.5.0",
-  "description": "Aegis: core authentication and authorization domain, with in-memory and PostgreSQL storage adapters and an Express adapter.",
+  "version": "1.0.0",
+  "description": "Aegis: a framework-independent authentication and authorization core (sessions, JWT, RBAC, policies) with PostgreSQL storage and an Express adapter.",
   "license": "MIT",
+  "author": "Rudra Mistry (https://github.com/RudraMistry-cmd)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RudraMistry-cmd/Aegis.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RudraMistry-cmd/Aegis/issues"
+  },
+  "homepage": "https://github.com/RudraMistry-cmd/Aegis#readme",
+  "keywords": [
+    "authentication",
+    "authorization",
+    "rbac",
+    "jwt",
+    "jwks",
+    "refresh-token",
+    "session",
+    "express",
+    "postgresql",
+    "typescript",
+    "security"
+  ],
   "type": "module",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",

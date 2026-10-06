@@ -106,7 +106,7 @@ fail-closed policy errors, scope).
 
 ## 3. Deviations from the specification
 
-Each deviation is also marked with a `TODO` or a note in the source file named below.
+Each deviation is also marked with an "Out of scope for Phase 1" note in the source file named below.
 
 **D-1 — Access tokens: resolved in Phase 3, no longer a deviation.** The stub is gone.
 `src/auth/jwt/` implements the JWT profile of `spec/auth/tokens.md` §2.6 and the key rotation of §6
@@ -151,7 +151,7 @@ Phase 1 reads the store on every resolution. This is stricter than the spec (zer
 `MID-03`'s multi-instance staleness bound is not applicable and is not claimed.
 
 **D-9 — Housekeeping deletions are not port methods.** `deleteTerminalBefore` /
-`deleteExpiredBefore` (`spec/storage/interfaces.md` §5, §6, §7) remain `TODO` on the ports. The
+`deleteExpiredBefore` (`spec/storage/interfaces.md` §5, §6, §7) are out of scope for Phase 1 and absent from the ports. The
 PostgreSQL adapter offers `storage.housekeep(cutoff)` as an adapter-level operation (tested). Expiry
 is always derived from timestamps at read time, so no behaviour depends on deletion.
 

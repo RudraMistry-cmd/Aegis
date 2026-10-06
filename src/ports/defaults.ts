@@ -78,8 +78,8 @@ export interface ScryptHasherOptions {
 /**
  * Reference PasswordHasher using scrypt from node:crypto (no native build step).
  * NOTE: spec/auth/principal.md §5.1.3 names Argon2id as the default; scrypt is an explicitly
- * selected alternative permitted by the same clause. Pepper support is not implemented
- * (TODO spec/auth/principal.md §5.1.4).
+ * selected alternative permitted by the same clause. Out of scope for Phase 1: password pepper
+ * support (spec/auth/principal.md §5.1.4).
  */
 export class ScryptHasher implements PasswordHasher {
   private readonly N: number;
