@@ -47,7 +47,8 @@
   "prettier": {
     "singleQuote": true,
     "printWidth": 100,
-    "trailingComma": "all"
+    "trailingComma": "all",
+    "endOfLine": "auto"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
