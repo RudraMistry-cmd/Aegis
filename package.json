@@ -16,7 +16,10 @@
     "test:all": "npm test && node scripts/test-postgres.mjs",
     "lint": "eslint . && prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\"",
-    "start-demo": "npm run build && node dist/examples/in-memory-demo.js"
+    "start-demo": "npm run build && node dist/examples/in-memory-demo.js",
+    "test:postgres": "npm run test:pg",
+    "migrate": "node scripts/migrate.mjs",
+    "keys": "node dist/examples/staging/keys.js"
   },
   "prettier": {
     "singleQuote": true,

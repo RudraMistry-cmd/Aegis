@@ -1,0 +1,90 @@
+# Aegis staging stack: PostgreSQL, a one-shot migration job, the Aegis staging server, Prometheus
+# and Grafana. Runbook: docs/STAGING.md.
+#
+# SECRETS — none are stored in this file. Compose reads them from your shell environment or from a
+# local `.env` file next to this one (git-ignored; never commit it):
+#
+#   AEGIS_MASTER_KEY   64 hex chars (32 random bytes). Seals the private signing keys in PostgreSQL.
+#                      Generate one:  openssl rand -hex 32
+#                      Losing it makes every stored signing key unusable; leaking it exposes them.
+#   PG_USER / PG_PASS / PG_DB   database credentials (PG_PASS must be URL-safe: letters, digits, - _)
+#   GRAFANA_ADMIN_PASSWORD      optional; defaults to "admin" (staging only — change it on first login)
+#   STAGING_SEED_EMAIL / STAGING_SEED_PASSWORD   optional smoke-test user
+#
+# Every `${VAR:?…}` below makes `docker compose up` fail fast when the variable is unset, instead
+# of starting with an empty secret. All ports bind to 127.0.0.1 only.
+
+name: aegis-staging
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: ${PG_USER:?set PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASS:?set PG_PASS}
+      POSTGRES_DB: ${PG_DB:?set PG_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Applies migrations/*.sql once each, then exits. The app starts only after it succeeded.
+  migrate:
+    build: .
+    image: aegis-staging:local
+    command: ["node", "scripts/migrate.mjs"]
+    environment:
+      DATABASE_URL: postgres://${PG_USER}:${PG_PASS}@db:5432/${PG_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    image: aegis-staging:local
+    environment:
+      DATABASE_URL: postgres://${PG_USER}:${PG_PASS}@db:5432/${PG_DB}
+      AEGIS_MASTER_KEY: ${AEGIS_MASTER_KEY:?set AEGIS_MASTER_KEY (openssl rand -hex 32)}
+      PORT: "3000"
+      METRICS_PORT: "9464"
+      STAGING_SEED_EMAIL: ${STAGING_SEED_EMAIL:-}
+      STAGING_SEED_PASSWORD: ${STAGING_SEED_PASSWORD:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:3000:3000"
+      # 9464 (metrics) is not published: only Prometheus, on the compose network, scrapes it.
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - app
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  pgdata:
+  grafanadata:

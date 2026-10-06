@@ -1,0 +1,12 @@
+# Prometheus for the Aegis staging stack (docker-compose.yml). Scrapes the staging server's internal
+# metrics port; the counters are documented in src/observability/metrics.ts.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: aegis
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:9464"]
