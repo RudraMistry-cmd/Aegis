@@ -4,22 +4,57 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning, where
 the major version also tracks the major version of the specification in `spec/`.
 
-## [Unreleased]
+## [1.0.0] — 2026-10-06
 
-Phase 5: Express adapter (`aegis-core/express`), a transport layer only.
+**Phase 1 complete.** The core domain, PostgreSQL storage, JWT access tokens with key rotation and
+JWKS, the Express adapter and a staging stack are finished and tested. Everything not listed here is
+deliberately out of scope for Phase 1; see "Not included / Roadmap" in the README.
+
+### Security
+
+- **Login identifiers are digested with a keyed HMAC.** Rate-limit keys and the audit
+  `identifierDigest` used plain SHA-256, which for low-entropy values such as e-mail addresses can be
+  reversed with a dictionary. They now use HMAC-SHA256 under `identifierDigestKey` (option) or
+  `AEGIS_IDENTIFIER_DIGEST_KEY` (32+ random bytes, hex or base64). The key is required when
+  `NODE_ENV=production` (`CONFIG_INVALID`, rule `identifier_digest.required`); otherwise a random
+  per-process key is used and a start-up warning is raised. Refresh and session token digests stay
+  plain SHA-256: their inputs are high-entropy.
+- **`ScryptHasher` defaults to N = 2^17** (r = 8, p = 1). The previous default, 2^14, was chosen for
+  test speed and was also the production default. Existing hashes keep verifying and are upgraded at
+  the next login (`needsRehash`). Tests and demos pass a small `N` explicitly.
+
+### Upgrade notes
+
+- In production set `AEGIS_IDENTIFIER_DIGEST_KEY` before upgrading (the app refuses to start without
+  it). Old audit digests will not match new ones.
+- Password hashing is about 8× more expensive per login with the new default; pass `{ N: ... }` to
+  `ScryptHasher` if you need to tune it.
 
 ### Added
 
-- `authenticate(auth, { cookieName? })`: Bearer header (RFC 6750) or opt-in cookie →
-  `auth.authn.authenticate` → `req.principal`. A malformed Authorization header is `TOKEN_INVALID`,
-  never a fallback to the cookie. No token decoding, no caching.
-- `authorize(auth, "resource:action", { resource? })` → `auth.authz.authorize`; deny → 403, no
-  principal → 401.
-- Error mapping (`HTTP_STATUS`, `errorResponse`, `sendError`): fixed messages, no causes, no details
-  on 5xx, `WWW-Authenticate` on 401, `Retry-After` on 429/503, `Cache-Control: no-store`.
-- Demo routes (`POST /login`, `/refresh`, `/logout`, `GET /me`), `createExpressApp`, and the JWKS route.
-- 21 tests in `test/express/adapter.test.ts` over a real HTTP server.
-- `express` ^5 as an optional peer dependency.
+- **Express adapter** (`aegis-core/express`), a transport layer only: `authenticate(auth, { cookieName? })`
+  (Bearer header per RFC 6750, or an opt-in cookie; a malformed header is `TOKEN_INVALID`, never a
+  fallback), `authorize(auth, "resource:action", { resource? })`, error mapping (fixed messages, no
+  causes, no details on 5xx, `WWW-Authenticate`, `Retry-After`, `Cache-Control: no-store`), demo
+  routes (`POST /login`, `/refresh`, `/logout`, `GET /me`), `createExpressApp` and the JWKS route.
+  `PRECONDITION_FAILED` maps to 409. `express` ^5 is an optional peer dependency.
+- **Prometheus metrics** (`src/observability`): `auth_requests_total{result}`,
+  `refresh_success_total`, `key_rotations_total`; `instrumentAuth` wraps the `Auth` facade from the
+  outside; opt-in `/metrics` in `createExpressApp`.
+- **Staging stack**: `docker-compose.yml` (PostgreSQL, migration job, app, Prometheus, Grafana),
+  `Dockerfile`, `examples/staging` (server and key-management CLI), `scripts/migrate.mjs`,
+  `docs/STAGING.md`, `docs/SECRETS.md`.
+- **CI**: build, lint and tests, then the PostgreSQL suite on versions 15 and 17, and a staging image
+  build; test logs are uploaded on failure.
+- **Notes example** (`examples/notes-app`): a small Express app with a one-page UI and an
+  integration guide; `npm run start-notes-app`.
+- Tests: 244 unit, conformance and Express tests and 127 PostgreSQL tests.
+
+### Changed
+
+- README rewritten for first-time readers; the 9 `TODO` comments in `src/` are now "Out of scope for
+  Phase 1" notes, collected in the README.
+- `.gitignore` covers secrets, key files and editor/OS files; package metadata completed.
 
 ## [0.4.0] — 2026-10-02
 

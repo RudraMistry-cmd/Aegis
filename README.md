@@ -1,83 +1,95 @@
-# Aegis Core — Phase 1 reference implementation
+# Aegis
 
-Aegis is a reusable authentication and authorization foundation designed to be dropped into many
-applications instead of being rebuilt each time. This repository contains the **specification**
-(`spec/`) and the **Phase 1 reference implementation** of its core domain (`src/`): pure TypeScript
-with no framework, no database, no HTTP layer and no network calls. Its job is to prove the
-specification is implementable and self-consistent, so later phases can add adapters (PostgreSQL,
-Express, FastAPI) without redesigning anything.
+**Authentication and authorization for Node.js: sessions, JWT, RBAC and policies behind small, swappable adapters.**
 
-Authentication produces a `Principal`; authorization consumes only a `Subject`. RBAC decides broad
-permissions, policies add contextual constraints, and every decision is deny-by-default.
+[![CI](https://github.com/RudraMistry-cmd/Aegis/actions/workflows/ci.yml/badge.svg)](https://github.com/RudraMistry-cmd/Aegis/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js >= 22](https://img.shields.io/badge/node-%3E%3D22-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
+
+## What it is
+
+Aegis is a reusable login-and-permissions layer you add to an application instead of rebuilding it
+each time. It handles registering and signing in users, issuing and refreshing tokens, ending
+sessions, and deciding who may do what. The core is plain TypeScript with no framework and no
+database; storage and HTTP are adapters you plug in. It is built from a written specification
+([`spec/`](spec/)), and test suites check the code against it, including races between parallel
+requests.
+
+## Features
+
+- **Password login** with enumeration-safe responses (the same answer whether or not an account exists) and failed-attempt throttling
+- **JWT access tokens** (RS256 or HS256) with `kid`-based **key rotation** and a **JWKS** endpoint; private signing keys are sealed with a master key when stored
+- **Rotating refresh tokens** with reuse detection: replaying a spent token revokes the whole session
+- **Strict per-request revocation**: a token's signature is never enough; the session is checked on every request, so logout and revocation take effect immediately
+- **RBAC** with role inheritance, **policy-based authorization** (for example "only the author may edit") and **query scopes** for filtering lists
+- **In-memory and PostgreSQL storage**, the latter safe under concurrent requests (ordered row locks, one-time refresh-token consumption, enforced session limits)
+- **Express adapter**: `authenticate()` and `authorize()` middleware, ready-made login/refresh/logout routes, safe JSON errors
+- **Audit events** for security-relevant actions, and opt-in **Prometheus metrics**
+- **370+ tests**, including 13 concurrency scenarios run against a real PostgreSQL
+
+## How it works
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as Your app with Aegis
+    participant D as Database
+    C->>A: POST /login (identifier, password)
+    A->>D: create session
+    A-->>C: access token (JWT) + refresh token
+    C->>A: GET /api (Bearer access token)
+    A->>A: check signature and expiry
+    A->>D: is the session still active?
+    A-->>C: 200 (or 401 once the session is revoked)
+    C->>A: POST /refresh (refresh token)
+    A->>D: consume the token exactly once, issue the next
+    A-->>C: new access token + new refresh token
+    C->>A: POST /logout
+    A->>D: revoke session
+    Note over C,A: the old access token is rejected from now on
+```
+
+## Architecture
+
+```mermaid
+flowchart LR
+    EX["Express adapter"] --> CORE
+    subgraph CORE ["Core (no framework, no database)"]
+        direction TB
+        DOM["Domain: login, refresh, revoke, RBAC, policies"] --> PORTS["Ports: storage, clock, hasher, audit, ..."]
+    end
+    MEM["In-memory storage"] -. implements .-> PORTS
+    PG["PostgreSQL storage"] -. implements .-> PORTS
+```
+
+The core only knows the port interfaces. Adapters sit outside it: you can swap storage or add a
+web framework without touching the domain.
 
 ## Quick start
 
+Requires Node.js 22 or newer.
+
 ```bash
+git clone https://github.com/RudraMistry-cmd/Aegis.git
+cd Aegis
 npm install
-npm run build
-npm test
-npm run test:pg
-npm run start-demo
+npm test                  # builds, then runs the unit, conformance and Express tests (a few seconds)
+npm run start-notes-app   # then open http://localhost:3000
 ```
 
-- `npm run build` — type-checks and compiles `src/`, `test/` and `examples/` to `dist/`.
-- `npm test` — builds, then runs the unit and conformance suites with the Node test runner.
-- `npm run test:pg` — runs the PostgreSQL adapter suite against a real PostgreSQL 17. It starts a
-  throwaway server itself (prebuilt binaries via `embedded-postgres`, no Docker), or uses
-  `AEGIS_PG_URL` when set. `npm run test:all` runs both suites.
-- `npm run lint` — ESLint plus a Prettier format check.
-- `npm run start-demo` — runs [`examples/in-memory-demo.ts`](examples/in-memory-demo.ts): register,
-  login, authorize, refresh with rotation, replay detection, logout, and the resulting audit trail.
+`start-notes-app` runs a small example app (Express, in-memory storage) with a one-page UI. Sign in
+as `alice@example.com`, `carol@example.com` or `bob@example.com` with the password
+`demo-password-123`. Bob is read-only; Carol cannot delete Alice's notes. The step-by-step
+integration guide is in [`examples/notes-app/README.md`](examples/notes-app/README.md).
 
-Node 22 or newer is required. The core has no runtime dependencies and no native builds; the
-PostgreSQL adapter needs only the pure-JavaScript `pg` driver (an optional peer dependency).
+Other commands:
 
-## PostgreSQL
-
-```ts
-import { createPostgresStorage, PostgresAuditSink } from 'aegis-core/postgres';
-
-const storage = createPostgresStorage({ connectionString: process.env.DATABASE_URL! });
-await storage.migrate(); // applies migrations/*.sql once each; safe on every start
-const auth = createAuth({ storage, audit: new PostgresAuditSink(storage.client), /* … */ });
-```
-
-The adapter keeps every invariant under real concurrency: a refresh token is consumed exactly once,
-the session limit holds under parallel logins, and a revoked session is invalid on the very next
-request. [`docs/POSTGRES.md`](docs/POSTGRES.md) explains how — lock order, isolation choice (with
-measurements), the SQL for each operation, and error mapping. Point `connectionString` at the
-primary, not a read replica.
-
-## Durable keys and JWKS
-
-```ts
-const { accessTokens, keys, jwks } = await openJwtAccessTokens(
-  { tokens: { algorithm: 'RS256', issuer, audience, ttl: 900_000 },
-    keys: { rotationEnabled: true, storage: 'postgres', generateIfMissing: true, jwks: {} } },
-  { keyStore: storage.keys, clock: new SystemClock(), ids: new CryptoIdGenerator() },
-);
-// serve jwks.handle() at jwks.path (/.well-known/jwks.json)
-```
-
-Signing keys live in the key store (PostgreSQL, a single-process file, or memory), with private
-halves sealed under `AEGIS_MASTER_KEY` (required for PostgreSQL). Every instance loads the same
-keyring, so tokens verify across restarts and instances; rotation is stage → activate. The JWKS
-publishes public RSA keys only. Startup fails with `CONFIG_INVALID` rather than run without a usable
-active key. See [`docs/JWKS.md`](docs/JWKS.md) for caching, rollout and compromise handling.
-
-## Express
-
-```ts
-import { authenticate, authorize, createExpressApp } from 'aegis-core/express';
-
-app.get('/posts', authenticate(auth), authorize(auth, 'post:read'), handler); // req.principal is set
-const demo = createExpressApp({ auth, jwks }); // POST /login /refresh /logout, GET /me, JWKS
-```
-
-A transport layer only: `authenticate()` passes the Bearer token (or an opt-in cookie) to
-`auth.authn.authenticate`, so every request is checked against the session store; nothing is decoded or
-cached in the adapter. Errors become fixed JSON bodies (401/403/404/409/400/429/500/503) without
-internal causes. Express 5 is an optional peer dependency, loaded only from `aegis-core/express`.
+| Command | What it does |
+|---|---|
+| `npm run test:pg` | PostgreSQL suite (127 tests). Starts a throwaway PostgreSQL itself, or uses `AEGIS_PG_URL`. |
+| `npm run start-demo` | Console walk-through: register, login, authorize, refresh, replay detection, logout, audit trail |
+| `npm run lint` | ESLint plus a Prettier check |
 
 ## Using it
 
@@ -135,73 +147,117 @@ await auth.authn.logout({ principal });
 
 // Per request: a valid JWT is necessary but never sufficient — the session decides.
 const caller = await auth.authn.authenticate(bearerToken); // or resolve() → Principal | null
-
-// Key rotation: old tokens keep verifying until they expire; new ones use the new kid.
-keys.rotate({ kid: '2026-11', privateKey: process.env.JWT_NEXT_PRIVATE_KEY_PEM! });
 ```
 
 Every public call takes an explicit `Subject` or `Principal` — there is no ambient "current user".
 Authorization decisions are values (`authorize`, `can`); only `assert` throws.
 
-## Where the specification lives
+**Production settings.** Passwords are hashed with scrypt at a strong default cost (N = 2^17).
+Login identifiers appear in rate-limit keys and audit events only as an HMAC under a secret: set
+`AEGIS_IDENTIFIER_DIGEST_KEY` (or the `identifierDigestKey` option; `openssl rand -hex 32`). When
+`NODE_ENV=production`, Aegis refuses to start without it.
 
-`spec/` is the normative source and was frozen before implementation:
+### Express
 
-| Area | Files |
+```ts
+import { authenticate, authorize, createExpressApp } from 'aegis-core/express';
+
+app.get('/posts', authenticate(auth), authorize(auth, 'post:read'), handler); // req.principal is set
+const demo = createExpressApp({ auth, jwks }); // POST /login /refresh /logout, GET /me, JWKS
+```
+
+A transport layer only: `authenticate()` hands the Bearer token (or an opt-in cookie) to
+`auth.authn.authenticate`, so every request is checked against the session store; nothing is
+decoded or cached in the adapter. Errors become fixed JSON bodies without internal causes. Express 5
+is an optional peer dependency, loaded only from `aegis-core/express`.
+
+### PostgreSQL, durable keys and JWKS
+
+```ts
+import { createPostgresStorage, PostgresAuditSink } from 'aegis-core/postgres';
+
+const storage = createPostgresStorage({ connectionString: process.env.DATABASE_URL! });
+await storage.migrate(); // applies migrations/*.sql once each; safe on every start
+
+const { accessTokens, keys, jwks } = await openJwtAccessTokens(
+  { tokens: { algorithm: 'RS256', issuer, audience, ttl: 900_000 },
+    keys: { rotationEnabled: true, storage: 'postgres', generateIfMissing: true, jwks: {} } },
+  { keyStore: storage.keys, clock: new SystemClock(), ids: new CryptoIdGenerator() },
+);
+const auth = createAuth({ storage, audit: new PostgresAuditSink(storage.client), accessTokens, /* … */ });
+// serve jwks.handle() at jwks.path (/.well-known/jwks.json)
+```
+
+Signing keys live in the key store, with private halves sealed under `AEGIS_MASTER_KEY` (required
+for PostgreSQL). Every instance loads the same keyring, so tokens verify across restarts and
+instances; rotation is stage → activate. Startup fails with `CONFIG_INVALID` rather than run without
+a usable active key. Point `connectionString` at the primary, not a read replica.
+
+## Status: v1.0.0 — Phase 1 complete
+
+Phase 1 is finished: the core domain, PostgreSQL storage, JWT tokens with key rotation and JWKS,
+the Express adapter, and a staging stack (Docker Compose, CI, Prometheus). The specification is the
+contract, and the test suites check the code against it.
+
+### Not included / Roadmap
+
+These are outside Phase 1, not unfinished work. Each is marked in the source with an
+"Out of scope for Phase 1" note naming the spec section it would implement.
+
+- **Multi-factor authentication** and other additional login factors
+- **Password reset and e-mail verification** (they need a mail/notification port)
+- **A shared rate limiter** for several instances; the bundled limiter lives in one process
+- **Cleanup of expired tokens and sessions**: expiry is always checked when rows are read, so
+  correctness does not depend on deletion; the PostgreSQL adapter offers `storage.housekeep(cutoff)`
+  to schedule yourself
+- **A FastAPI (Python) adapter**; Express is the only HTTP adapter
+- **Scoped role assignments** (per tenant or project); roles are global
+
+Also not included: databases other than PostgreSQL, runtime-defined roles, OAuth/OIDC, passkeys,
+API keys, a password pepper, and secret-manager or HSM connectors (options are documented in
+[`docs/JWKS.md`](docs/JWKS.md) and [`docs/SECRETS.md`](docs/SECRETS.md)).
+
+## Documentation
+
+| Read | For |
 |---|---|
-| Authentication contracts | `spec/auth/principal.md`, `session.md`, `tokens.md` |
-| RBAC | `spec/rbac/permissions.md`, `roles.md`, `assignments.md` |
-| Policy and list scoping | `spec/policy/policy.md`, `scope.md` |
-| Storage and supporting ports | `spec/storage/interfaces.md` |
-| Flows | `spec/flows/login.md`, `refresh.md`, `revoke.md` |
-| Errors, invariants, conformance | `spec/errors.md`, `invariants.md`, `conformance.md` |
+| [`spec/`](spec/) | The normative specification: authentication, RBAC, policies, storage ports, flows, errors, invariants, conformance cases |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Architecture and the reasoning behind it |
+| [`docs/POSTGRES.md`](docs/POSTGRES.md) | How the PostgreSQL adapter stays correct under concurrency; schema and locks |
+| [`docs/JWKS.md`](docs/JWKS.md) | Key storage, rotation, the JWKS endpoint, handling a compromised key |
+| [`docs/STAGING.md`](docs/STAGING.md), [`docs/SECRETS.md`](docs/SECRETS.md) | Running the staging stack; storing and rotating secrets |
+| [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) | Which specification cases the tests cover, and the known deviations |
+| [`CHANGELOG.md`](CHANGELOG.md), [`CONTRIBUTING.md`](CONTRIBUTING.md) | History and house rules |
 
-Every source file names the specification section it implements in its first comment, and
-[`docs/DESIGN.md`](docs/DESIGN.md) holds the architecture rationale behind it all.
+Every source file names the specification section it implements in its first comment.
 
-## How the tests map to the specification
+## Tests
 
-- `test/unit/` — the mandatory Phase 1 behaviours: login, refresh rotation, the refresh reuse
-  attack, revocation, RBAC resolution and permission denial.
-- `test/conformance/` — 61 cases taken from `spec/conformance.md`, each labelled with its case id
-  (for example `REF-04`, `AZ-DENY-01`, `RACE-06`) and the GIVEN / WHEN / THEN of the spec.
-  [`docs/CONFORMANCE.md`](docs/CONFORMANCE.md) lists them and records where this implementation
-  deliberately deviates or cannot verify a case in memory.
-- `test/postgres/` — 103 cases on a real PostgreSQL: the storage contract run against **both**
-  adapters, 13 race scenarios under two isolation levels, transaction and integrity cases, and the
-  storage-dependent conformance flows end to end.
+- `test/unit/` — login, refresh rotation and reuse, revocation, RBAC, policies, JWT, key storage, JWKS, metrics.
+- `test/conformance/` — cases taken from `spec/conformance.md`, each labelled with its case id (for example `REF-04`, `AZ-DENY-01`, `RACE-06`).
+- `test/express/` — the HTTP adapter through a real server.
+- `test/postgres/` — the storage contract on both adapters, 13 race scenarios under two isolation levels, transactions and integrity, key storage.
 
 ## Layout
 
 ```
-spec/              normative specification (input to this phase, unchanged by it)
-src/domain/        pure types: Subject, Principal, User, Session, RefreshToken, Permission, Assignment
-src/errors/        the error catalog and factory of spec/errors.md
-src/ports/         port interfaces (storage + Clock, Hasher, RateLimiter, Audit) and simple defaults
-src/rbac/          catalog, role and permission resolution, assignment service with escalation guards
-src/policy/        policy definitions, the decision engine, and the list-scope constraint language
-src/auth/          login, refresh, revoke, request resolution, session and token issuance
-src/storage/memory in-memory reference adapter with simulated atomicity
-src/storage/postgres PostgreSQL adapter: stores, transaction runner, locks, error mapping, audit sink, key store
-src/storage/file   single-process JSON key store (development)
-src/adapters/express Express middleware, error mapping, demo routes, app factory
-src/auth/jwt/      JWT provider, key providers (static and persistent), key sealing, JWKS
-migrations/        SQL schema: 001 tables, constraints and integrity triggers; 002 indexes; 003 signing keys
-test/              unit and conformance suites; test/postgres/ for the PostgreSQL adapter
-examples/          runnable in-memory demo
+spec/                  normative specification
+src/domain/            pure types: Subject, Principal, User, Session, RefreshToken, Assignment
+src/errors/            the error catalog of spec/errors.md
+src/ports/             port interfaces (storage, clock, hasher, rate limiter, audit) and simple defaults
+src/rbac/              catalog, role and permission resolution, assignment service with escalation guards
+src/policy/            policy definitions, decision engine, list-scope language
+src/auth/              login, refresh, revoke, request resolution; src/auth/jwt/ JWT, key providers, JWKS
+src/storage/           memory/ (reference adapter), postgres/ (adapter, key store), file/ (dev key store)
+src/adapters/express/  middleware, error mapping, demo routes, app factory
+src/observability/     Prometheus counters
+migrations/            SQL schema: tables and integrity triggers, indexes, signing keys
+examples/              in-memory demo, notes-app (Express), staging server
 ```
 
 Dependencies point inward: `src/policy` and `src/rbac` never import `src/auth`, and only
-`src/storage/postgres` imports a database driver. The package root does not import it, so core
-users never load `pg`.
+`src/storage/postgres` imports a database driver, so core users never load `pg`.
 
-## Status and scope
+## License
 
-Phase 1 implemented the core domain, Phase 2 the PostgreSQL storage adapter, Phase 3 JWT access
-tokens (RS256/HS256) with `kid`-based key rotation, and Phase 3.5 durable key storage with a JWKS
-endpoint. Not implemented, by design: other databases, HTTP or framework integration, secret-manager
-and HSM integration (documented in `docs/JWKS.md`), a caching layer, email delivery and the verification/password-reset flows that need it, MFA,
-OAuth/OIDC, passkeys, API keys, and multi-tenant scoped assignments. Each gap is marked with a `TODO` naming the spec section, and
-`docs/CONFORMANCE.md` lists them in one place.
-
-License: [MIT](LICENSE).
+[MIT](LICENSE)
