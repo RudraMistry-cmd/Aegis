@@ -19,7 +19,8 @@
     "start-demo": "npm run build && node dist/examples/in-memory-demo.js",
     "test:postgres": "npm run test:pg",
     "migrate": "node scripts/migrate.mjs",
-    "keys": "node dist/examples/staging/keys.js"
+    "keys": "node dist/examples/staging/keys.js",
+    "start-notes-app": "npm run build && node dist/examples/notes-app/server.js"
   },
   "prettier": {
     "singleQuote": true,
