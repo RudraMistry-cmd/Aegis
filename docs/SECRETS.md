@@ -15,6 +15,15 @@ use the PostgreSQL key store without one (`keys.master_key_required`).
 openssl rand -hex 32
 ```
 
+### The identifier digest key
+
+`AEGIS_IDENTIFIER_DIGEST_KEY` (or the `identifierDigestKey` option; 32+ random bytes as hex or
+base64) keys the HMAC-SHA256 of login identifiers used in rate-limit keys and audit events, so an
+e-mail address cannot be recovered from a leaked log by dictionary attack. When `NODE_ENV` is
+`production`, Aegis refuses to start without it (`CONFIG_INVALID`, rule `identifier_digest.required`).
+It is far less sensitive than the master key: changing it only means old digests no longer match new
+ones. Use the same value on every instance so digests correlate.
+
 ## 2. Never next to the data
 
 - **Not in the database, not in its backups, not in the same backup job.** The whole point of the

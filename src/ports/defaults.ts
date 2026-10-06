@@ -63,7 +63,11 @@ export class SequentialIdGenerator implements IdGenerator {
 // ---------------------------------------------------------------- password hasher
 
 export interface ScryptHasherOptions {
-  /** CPU/memory cost (power of two). Defaults to 2^14 for test speed. */
+  /**
+   * CPU/memory cost (power of two). Default 2^17 (about 128 MiB and ~0.3 s per hash). Tests and
+   * demos pass a smaller value explicitly for speed; hashes made with other parameters still verify
+   * and are flagged by `needsRehash`.
+   */
   readonly N?: number;
   readonly r?: number;
   readonly p?: number;
@@ -90,7 +94,7 @@ export class ScryptHasher implements PasswordHasher {
   readonly calls = { hash: 0, verify: 0, dummyVerify: 0 };
 
   constructor(opts: ScryptHasherOptions = {}) {
-    this.N = opts.N ?? 1 << 14;
+    this.N = opts.N ?? 1 << 17;
     this.r = opts.r ?? 8;
     this.p = opts.p ?? 1;
     this.maxConcurrency = opts.maxConcurrency ?? 4;

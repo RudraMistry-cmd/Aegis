@@ -76,7 +76,8 @@ const tokens = await openJwtAccessTokens(
 
 const auth = createAuth({
   storage,
-  hasher: new ScryptHasher(),
+  // The production default (N = 2^17) is stronger and slower; a lighter cost keeps this demo snappy.
+  hasher: new ScryptHasher({ N: 1 << 14 }),
   accessTokens: tokens.accessTokens,
   clock,
   random: new CryptoRandom(),

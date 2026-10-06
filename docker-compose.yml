@@ -7,6 +7,10 @@
 #   AEGIS_MASTER_KEY   64 hex chars (32 random bytes). Seals the private signing keys in PostgreSQL.
 #                      Generate one:  openssl rand -hex 32
 #                      Losing it makes every stored signing key unusable; leaking it exposes them.
+#   AEGIS_IDENTIFIER_DIGEST_KEY   64 hex chars (openssl rand -hex 32). Keys the HMAC of login
+#                      identifiers in rate-limit keys and audit events; the app refuses to start in
+#                      production without it. Far less sensitive than the master key: changing it
+#                      only loses the correlation of old digests.
 #   PG_USER / PG_PASS / PG_DB   database credentials (PG_PASS must be URL-safe: letters, digits, - _)
 #   GRAFANA_ADMIN_PASSWORD      optional; defaults to "admin" (staging only — change it on first login)
 #   STAGING_SEED_EMAIL / STAGING_SEED_PASSWORD   optional smoke-test user
@@ -50,6 +54,7 @@ services:
     environment:
       DATABASE_URL: postgres://${PG_USER}:${PG_PASS}@db:5432/${PG_DB}
       AEGIS_MASTER_KEY: ${AEGIS_MASTER_KEY:?set AEGIS_MASTER_KEY (openssl rand -hex 32)}
+      AEGIS_IDENTIFIER_DIGEST_KEY: ${AEGIS_IDENTIFIER_DIGEST_KEY:?set AEGIS_IDENTIFIER_DIGEST_KEY (openssl rand -hex 32)}
       PORT: "3000"
       METRICS_PORT: "9464"
       STAGING_SEED_EMAIL: ${STAGING_SEED_EMAIL:-}

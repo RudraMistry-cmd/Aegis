@@ -15,7 +15,6 @@ import {
   type User,
 } from '../domain/index.js';
 import { authError, isAuthError, toInfraError } from '../errors/index.js';
-import { digest } from './digest.js';
 import { emitAudit, type AuthContext } from './config.js';
 import { createSessionWithCredentials, type IssuedCredentials } from './issue.js';
 import { buildPrincipal } from './resolve.js';
@@ -109,7 +108,10 @@ export class LoginService {
           outcome: 'failure',
           reason: 'invalid_credentials',
           // §10.4: the identifier is recorded only as a keyed digest, with no existence hint.
-          details: { identifierDigest: digest(throttleIdentifier), detail: reason },
+          details: {
+            identifierDigest: this.ctx.config.digestIdentifier(throttleIdentifier),
+            detail: reason,
+          },
           context: {
             ...(input.requestId ? { requestId: input.requestId } : {}),
             ...(input.clientIp ? { ip: input.clientIp } : {}),
@@ -348,7 +350,7 @@ export class LoginService {
   ): { identifier: string; ip?: string; global: string } {
     return {
       // §9.8.2: the raw identifier is never stored in a shared limiter.
-      identifier: `login:${digest(normalizedIdentifier)}`,
+      identifier: `login:${this.ctx.config.digestIdentifier(normalizedIdentifier)}`,
       ...(clientIp !== undefined ? { ip: `login-ip:${clientIp}` } : {}),
       global: 'login-global',
     };

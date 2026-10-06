@@ -26,6 +26,8 @@ import {
 } from '../../src/index.js';
 
 export const TEST_PASSWORD = 'correct-horse-battery-staple';
+/** A fixed identifier-digest key (64 hex chars) so digests are reproducible in tests. */
+export const TEST_DIGEST_KEY = '3b1f6c0a9d2e4875b3c1a0f9e8d7c6b5a49382716f5e4d3c2b1a09f8e7d6c5b4';
 export const START = Date.UTC(2030, 0, 1);
 export const MINUTE = 60_000;
 export const HOUR = 60 * MINUTE;
@@ -211,6 +213,7 @@ export function createTestSystem(options: TestSystemOptions = {}): TestSystem {
       ? { enumerationSafeRegistration: options.enumerationSafeRegistration }
       : {}),
     identifiers: ['email', 'username'],
+    identifierDigestKey: TEST_DIGEST_KEY,
     sessions: options.sessions ?? {},
     tokens: options.tokens ?? {},
   });

@@ -8,7 +8,9 @@ import {
   type AccountStateMachine,
   type Timestamp,
 } from '../domain/index.js';
+import { randomBytes } from 'node:crypto';
 import { configInvalid, type ConfigViolation } from '../errors/index.js';
+import { IDENTIFIER_DIGEST_KEY_BYTES, identifierDigest } from './digest.js';
 import type {
   AccessTokenProvider,
   AttributeProvider,
@@ -70,6 +72,31 @@ export interface AuthConfigInput {
   readonly throttleFailMode?: 'open-with-alert' | 'closed';
   /** The subject type stamped on sessions and principals. Default 'user'. */
   readonly subjectType?: string;
+  /**
+   * Secret key for the keyed digests of login identifiers (rate-limit keys, audit
+   * `identifierDigest`): at least 32 random bytes as 64+ hex characters or base64
+   * (`openssl rand -hex 32`). Falls back to the `AEGIS_IDENTIFIER_DIGEST_KEY` environment
+   * variable. REQUIRED when NODE_ENV is "production" (CONFIG_INVALID otherwise); elsewhere a random
+   * per-process key is used and a start-up warning says digests will not correlate across restarts.
+   */
+  readonly identifierDigestKey?: string;
+  /** Environment for the fallbacks above. Default `process.env`. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+}
+
+/** The environment variable consulted when `identifierDigestKey` is not set. */
+export const IDENTIFIER_DIGEST_KEY_ENV = 'AEGIS_IDENTIFIER_DIGEST_KEY';
+
+/** Parses a key given as hex or base64; null when it is not at least 32 distinct-looking bytes. */
+function parseDigestKey(value: string): Buffer | null {
+  const text = value.trim();
+  const bytes = /^(?:[0-9a-fA-F]{2})+$/.test(text)
+    ? Buffer.from(text, 'hex')
+    : /^[A-Za-z0-9+/_-]+=*$/.test(text)
+      ? Buffer.from(text, 'base64')
+      : null;
+  if (bytes === null || bytes.length < IDENTIFIER_DIGEST_KEY_BYTES) return null;
+  return new Set(bytes).size >= 8 ? bytes : null; // rejects "0000…" and similar placeholders
 }
 
 export interface ResolvedAuthConfig {
@@ -93,6 +120,11 @@ export interface ResolvedAuthConfig {
   readonly enumerationSafeRegistration: boolean;
   readonly throttleFailMode: 'open-with-alert' | 'closed';
   readonly subjectType: string;
+  /**
+   * Keyed digest of a normalized identifier. A closure, so the key itself is never a property of the
+   * configuration (it cannot be logged, serialized or returned by `describe()`).
+   */
+  readonly digestIdentifier: (normalizedIdentifier: string) => string;
   /** Insecure relaxations, emitted as `config.warning` at start-up (INV-CFG-02). */
   readonly warnings: readonly { readonly path: string; readonly message: string }[];
 }
@@ -250,6 +282,35 @@ export function resolveAuthConfig(input: AuthConfigInput = {}): ResolvedAuthConf
     v.push({ path: 'subjectType', rule: 'subject.type', message: 'invalid subject type' });
   }
 
+  const env = input.env ?? process.env;
+  const rawKey = input.identifierDigestKey ?? env[IDENTIFIER_DIGEST_KEY_ENV];
+  let digestKey: Buffer;
+  if (rawKey !== undefined && rawKey !== '') {
+    const parsed = parseDigestKey(rawKey);
+    if (parsed === null) {
+      v.push({
+        path: 'identifierDigestKey',
+        rule: 'identifier_digest.key',
+        message: 'must be at least 32 random bytes as hex or base64 (openssl rand -hex 32)',
+      });
+    }
+    digestKey = parsed ?? Buffer.alloc(0);
+  } else if (env['NODE_ENV'] === 'production') {
+    v.push({
+      path: 'identifierDigestKey',
+      rule: 'identifier_digest.required',
+      message: `required in production: set identifierDigestKey or ${IDENTIFIER_DIGEST_KEY_ENV}`,
+    });
+    digestKey = Buffer.alloc(0);
+  } else {
+    digestKey = randomBytes(IDENTIFIER_DIGEST_KEY_BYTES);
+    warnings.push({
+      path: 'identifierDigestKey',
+      message:
+        'not set: using a random per-process key, so identifier digests do not correlate across restarts or instances',
+    });
+  }
+
   if (v.length > 0) throw configInvalid(v);
 
   return deepFreeze({
@@ -268,6 +329,8 @@ export function resolveAuthConfig(input: AuthConfigInput = {}): ResolvedAuthConf
     enumerationSafeRegistration,
     throttleFailMode,
     subjectType,
+    digestIdentifier: (normalizedIdentifier: string) =>
+      identifierDigest(normalizedIdentifier, digestKey),
     warnings,
   });
 }

@@ -25,6 +25,7 @@ git-ignored.
 
 ```bash
 export AEGIS_MASTER_KEY="$(openssl rand -hex 32)"     # 64 hex chars; or: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+export AEGIS_IDENTIFIER_DIGEST_KEY="$(openssl rand -hex 32)"   # keys the HMAC of login identifiers in logs and rate limits
 export PG_USER=aegis PG_DB=aegis
 export PG_PASS="$(openssl rand -hex 16)"
 export STAGING_SEED_EMAIL=smoke@example.com
