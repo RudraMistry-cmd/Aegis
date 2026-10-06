@@ -74,7 +74,7 @@ Requires Node.js 22 or newer.
 git clone https://github.com/RudraMistry-cmd/Aegis.git
 cd Aegis
 npm install
-npm test                  # builds, then runs the unit, conformance and Express tests (a few seconds)
+npm test                  # builds, then runs the unit, conformance and Express tests (about 20 seconds)
 npm run start-notes-app   # then open http://localhost:3000
 ```
 

@@ -56,7 +56,8 @@ const tokens = await openJwtAccessTokens(
 );
 
 const auth = createAuth({
-  storage, hasher: new ScryptHasher(), accessTokens: tokens.accessTokens,
+  // The default hash cost (N = 2^17) suits production; this demo uses a lighter one to stay snappy.
+  storage, hasher: new ScryptHasher({ N: 1 << 14 }), accessTokens: tokens.accessTokens,
   clock, random: new CryptoRandom(), ids, rateLimiter: new MemoryRateLimiter(),
   catalog, policies: [noteOwnership], identifiers: ['email'],
 });
@@ -137,6 +138,7 @@ refresh token and retry once (see `call()` in [`public/index.html`](public/index
 | In this demo | In production |
 |---|---|
 | `createMemoryStorage()` (lost on restart) | `createPostgresStorage({ connectionString })` from `aegis-core/postgres`, then `await storage.migrate()`; use `storage.keys` as the key store with `storage: 'postgres'` |
+| Random per-process identifier-digest key | Set `AEGIS_IDENTIFIER_DIGEST_KEY` (32 random bytes); required when `NODE_ENV=production` |
 | `InMemoryKeyStore`, new key each start, warning about `AEGIS_MASTER_KEY` | Set `AEGIS_MASTER_KEY` (32 random bytes, from a secret manager) on every instance; `generateIfMissing` only for the very first deploy |
 | Users seeded in code | A sign-up route calling `auth.authn.register`, then assigning a default role |
 | Tokens kept in page memory | Same for the access token; consider an HttpOnly, `SameSite=Strict` cookie for the refresh token (`authenticate(auth, { cookieName })` reads cookies, and cookie auth needs CSRF protection) |
